@@ -33,7 +33,7 @@ jobs:
       - name: Install Python tools
         run: |
           python3 -m pip install --upgrade pip
-          pip3 install buildozer cython
+          pip3 install --upgrade buildozer cython python-for-android
 
       - name: Build APK
         run: |
