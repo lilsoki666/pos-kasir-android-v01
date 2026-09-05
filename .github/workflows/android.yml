@@ -1,323 +1,67 @@
-name: Build UniversalPOS Android
+name: Build Android APK
 
 on:
   push:
-    branches:
-      - main
-      - master
-
-  workflow_dispatch:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
 
     steps:
-
-      # ==========================================
-      # CHECKOUT
-      # ==========================================
-
-      - name: Checkout Repository
+      - name: Checkout Code
         uses: actions/checkout@v4
 
-
-      # ==========================================
-      # JAVA 17
-      # ==========================================
-
-      - name: Setup Java 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-
-
-      # ==========================================
-      # PYTHON 3.11
-      # ==========================================
-
-      - name: Setup Python 3.11
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-          cache: pip
+          python-version: '3.10'
 
-
-      # ==========================================
-      # LINUX DEPENDENCIES
-      # ==========================================
-
-      - name: Install Linux Dependencies
+      - name: Install System Dependencies
         run: |
           sudo apt-get update
-
           sudo apt-get install -y \
+            build-essential \
             git \
+            ffmpeg \
+            libsdl2-dev \
+            libsdl2-image-dev \
+            libsdl2-mixer-dev \
+            libsdl2-ttf-dev \
+            libportmidi-dev \
+            libswscale-dev \
+            libavformat-dev \
+            libavcodec-dev \
+            zlib1g-dev \
+            libgstreamer1.0-dev \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
+            ccache \
             zip \
             unzip \
-            wget \
-            curl \
-            autoconf \
-            automake \
-            libtool \
-            pkg-config \
-            zlib1g-dev \
-            libncurses5-dev \
-            libncursesw5-dev \
-            libtinfo5 \
-            cmake \
-            libffi-dev \
-            libssl-dev
+            openjdk-17-jdk
 
-
-      # ==========================================
-      # ANDROID SDK
-      # ==========================================
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-
-      # ==========================================
-      # ACCEPT ANDROID LICENSES
-      # ==========================================
-
-      - name: Accept Android Licenses
+      - name: Install Buildozer & Cython
         run: |
-          yes | sdkmanager --licenses || true
+          pip install --upgrade pip
+          pip install buildozer cython==0.29.33
 
-
-      # ==========================================
-      # INSTALL ANDROID COMPONENTS
-      # ==========================================
-
-      - name: Install Android Components
+      - name: Auto Accept Android SDK Licenses
         run: |
-          sdkmanager \
-            "platform-tools" \
-            "platforms;android-35" \
-            "build-tools;37.0.0"
+          mkdir -p ~/.android
+          touch ~/.android/repositories.cfg
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          yes | $ANDROID_HOME/tools/bin/sdkmanager --licenses || true
 
-
-      # ==========================================
-      # VERIFY AIDL
-      # ==========================================
-
-      - name: Verify AIDL
+      - name: Build APK with Buildozer
         run: |
+          # Jalankan buildozer dalam mode non-interactive
+          yes | buildozer android debug
 
-          echo "======================================"
-          echo "ANDROID SDK"
-          echo "======================================"
-
-          echo "ANDROID_HOME:"
-          echo "$ANDROID_HOME"
-
-          echo ""
-          echo "BUILD TOOLS:"
-          ls -lah "$ANDROID_HOME/build-tools"
-
-
-          echo ""
-          echo "======================================"
-          echo "SEARCHING FOR AIDL"
-          echo "======================================"
-
-          AIDL=$(find "$ANDROID_HOME/build-tools" \
-            -type f \
-            -name aidl \
-            | sort \
-            | tail -n 1)
-
-
-          if [ -z "$AIDL" ]; then
-
-            echo "ERROR: AIDL NOT FOUND"
-
-            exit 1
-
-          fi
-
-
-          echo ""
-          echo "AIDL FOUND:"
-          echo "$AIDL"
-
-
-          echo ""
-          echo "======================================"
-          echo "TESTING AIDL"
-          echo "======================================"
-
-          "$AIDL" --help > /dev/null
-
-
-          echo ""
-          echo "======================================"
-          echo "AIDL CHECK PASSED"
-          echo "======================================"
-
-
-      # ==========================================
-      # INSTALL BUILDOZER
-      # ==========================================
-
-      - name: Install Buildozer
-        run: |
-
-          python -m pip install --upgrade \
-            pip \
-            setuptools \
-            wheel
-
-          pip install buildozer
-
-          pip install "cython<3"
-
-
-      # ==========================================
-      # CONFIGURE ANDROID ENVIRONMENT
-      # ==========================================
-
-      - name: Configure Android Environment
-        run: |
-
-          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
-
-          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> "$GITHUB_ENV"
-
-          echo "PATH=$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH" >> "$GITHUB_ENV"
-
-
-      # ==========================================
-      # REMOVE OLD BUILDOZER SDK
-      # ==========================================
-
-      - name: Clear Old Buildozer Cache
-        run: |
-          rm -rf ~/.buildozer
-          rm -rf .buildozer
-
-
-      # ==========================================
-      # VALIDATE PYTHON
-      # ==========================================
-
-      - name: Validate Python
-        run: |
-
-          echo "======================================"
-          echo "PYTHON VERSION"
-          echo "======================================"
-
-          python --version
-
-
-          echo ""
-          echo "======================================"
-          echo "CHECKING MAIN.PY"
-          echo "======================================"
-
-          python -m py_compile main.py
-
-
-          echo ""
-          echo "PYTHON SYNTAX CHECK PASSED"
-
-
-      # ==========================================
-      # CHECK BUILDOZER CONFIGURATION
-      # ==========================================
-
-      - name: Check Buildozer Configuration
-        run: |
-
-          echo "======================================"
-          echo "BUILDOZER VERSION"
-          echo "======================================"
-
-          buildozer --version
-
-
-          echo ""
-          echo "======================================"
-          echo "BUILDOZER SPEC"
-          echo "======================================"
-
-          grep -E \
-            "^(title|package.name|package.domain|version|requirements|android.api|android.minapi|android.ndk_version|android.archs)" \
-            buildozer.spec || true
-
-
-      # ==========================================
-      # BUILD APK
-      # ==========================================
-
-      - name: Build Debug APK
-        run: |
-
-          echo "======================================"
-          echo "STARTING BUILDOZER"
-          echo "======================================"
-
-          buildozer -v android debug
-
-
-      # ==========================================
-      # VERIFY APK
-      # ==========================================
-
-      - name: Verify APK
-        run: |
-
-          echo "======================================"
-          echo "APK RESULT"
-          echo "======================================"
-
-          find bin \
-            -type f \
-            -name "*.apk" \
-            -print
-
-
-          echo ""
-          echo "APK DIRECTORY:"
-          ls -lah bin/
-
-
-          APK=$(find bin \
-            -type f \
-            -name "*.apk" \
-            -print \
-            -quit)
-
-
-          if [ -z "$APK" ]; then
-
-            echo "ERROR: APK NOT FOUND"
-
-            exit 1
-
-          fi
-
-
-          echo ""
-          echo "APK FOUND:"
-          echo "$APK"
-
-
-      # ==========================================
-      # UPLOAD APK
-      # ==========================================
-
-      - name: Upload APK
+      - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
-
         with:
-
-          name: UniversalPOS-Android
-
+          name: package-apk
           path: bin/*.apk
-
-          if-no-files-found: error
