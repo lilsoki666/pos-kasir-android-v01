@@ -35,12 +35,14 @@ android.permissions = INTERNET, READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE
 # (int) Target Android API
 android.api = 33
 
+# (str) Android Build Tools version (TAMBAHKAN/SESUAIKAN BARIS INI)
+android.build_tools_version = 33.0.0
+
 # (int) Minimum API required
 android.minapi = 21
 
 # (str) Android NDK version
 android.ndk = 25b
-
 # (list) The Android archs to build for
 # PENTING: Wajib tambahkan ini agar kompatibel dengan HP Android modern (64-bit)
 android.archs = arm64-v8a, armeabi-v7a
