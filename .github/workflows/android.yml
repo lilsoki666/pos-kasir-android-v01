@@ -41,7 +41,11 @@ jobs:
             ccache \
             zip \
             unzip \
-            openjdk-17-jdk
+            openjdk-17-jdk \
+            libtool \
+            libtool-bin \
+            automake \
+            autoconf
 
       - name: Install Buildozer & Cython
         run: |
