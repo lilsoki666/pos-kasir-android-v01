@@ -1,11 +1,27 @@
+# ============================================================
+# UNIVERSAL POS / KASIR ANDROID
+# ============================================================
+# Stable Android version
+# Based on repository:
+# https://github.com/lilsoki666/pos-kasir-android-v01
+#
+# Main improvements:
+# - Database initialized BEFORE UI
+# - Safe SQLite handling
+# - Safer transaction processing
+# - Payment validation
+# - Transaction snapshot before clearing cart
+# - Android-safe database path
+# - No external image/Pillow dependency
+# ============================================================
+
 import os
 import sqlite3
 from datetime import datetime
 
 from kivy.app import App
-from kivy.clock import Clock
-from kivy.graphics import Color, RoundedRectangle
 from kivy.metrics import dp
+from kivy.graphics import Color, RoundedRectangle
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
 from kivy.uix.dropdown import DropDown
@@ -18,1288 +34,3254 @@ from kivy.uix.textinput import TextInput
 from kivy.utils import platform
 
 
-def get_db():
-    app = App.get_running_app()
-    # Menggunakan user_data_dir agar aman dari Permission Error di Android
-    db_dir = app.user_data_dir if (app and hasattr(app, "user_data_dir")) else "."
-    if not os.path.exists(db_dir):
-        os.makedirs(db_dir, exist_ok=True)
+# ============================================================
+# CONSTANTS
+# ============================================================
 
-    db_path = os.path.join(db_dir, "pos_kasir.db")
-    conn = sqlite3.connect(db_path)
+APP_NAME = "UniversalPOS"
+
+PRIMARY = (0.15, 0.65, 0.60, 1)
+PRIMARY_DARK = (0.10, 0.48, 0.45, 1)
+
+WHITE = (1, 1, 1, 1)
+TEXT = (0.15, 0.16, 0.18, 1)
+TEXT_LIGHT = (0.50, 0.52, 0.55, 1)
+
+BG = (0.94, 0.95, 0.97, 1)
+CARD = (1, 1, 1, 1)
+SOFT = (0.85, 0.87, 0.90, 1)
+
+DANGER = (0.88, 0.25, 0.25, 1)
+WARNING = (0.95, 0.60, 0.15, 1)
+
+CATEGORIES = [
+    "Semua",
+    "Makanan",
+    "Minuman",
+    "Snack",
+    "Lainnya",
+]
+
+PAYMENT_METHODS = [
+    "TUNAI",
+    "QRIS",
+    "DEBIT",
+    "KREDIT",
+    "TRANSFER",
+    "E-WALLET",
+]
+
+
+# ============================================================
+# DATABASE
+# ============================================================
+
+def get_db():
+    """
+    Return SQLite connection.
+
+    Android:
+        /data/user/0/<package>/files/pos_kasir.db
+
+    Desktop:
+        current directory / pos_kasir.db
+    """
+
+    app = App.get_running_app()
+
+    if app is not None and hasattr(app, "user_data_dir"):
+        db_dir = app.user_data_dir
+    else:
+        db_dir = os.path.abspath(".")
+
+    os.makedirs(db_dir, exist_ok=True)
+
+    db_path = os.path.join(
+        db_dir,
+        "pos_kasir.db"
+    )
+
+    conn = sqlite3.connect(
+        db_path,
+        timeout=10
+    )
+
     conn.row_factory = sqlite3.Row
+
     return conn
 
 
 def init_db():
+    """
+    Create all required database tables.
+
+    This MUST run before KasirScreen is created.
+    """
+
     conn = get_db()
-    c = conn.cursor()
-    c.execute(
-        """CREATE TABLE IF NOT EXISTS menu (
-                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                 nama TEXT NOT NULL,
-                 kategori TEXT NOT NULL,
-                 harga INTEGER NOT NULL)"""
-    )
-    c.execute(
-        """CREATE TABLE IF NOT EXISTS transaksi (
-                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                 faktur TEXT NOT NULL,
-                 tanggal TEXT NOT NULL,
-                 total INTEGER NOT NULL,
-                 bayar INTEGER NOT NULL,
-                 kembali INTEGER NOT NULL,
-                 pembayaran TEXT DEFAULT 'TUNAI',
-                 catatan TEXT DEFAULT '')"""
-    )
-    c.execute(
-        """CREATE TABLE IF NOT EXISTS detail_transaksi (
-                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                 faktur TEXT NOT NULL,
-                 menu_id INTEGER NOT NULL,
-                 nama TEXT NOT NULL,
-                 harga INTEGER NOT NULL,
-                 jumlah INTEGER NOT NULL,
-                 subtotal INTEGER NOT NULL)"""
-    )
 
-    c.execute("PRAGMA table_info(transaksi)")
-    columns = [column[1] for column in c.fetchall()]
-    if "pembayaran" not in columns:
-        c.execute(
-            "ALTER TABLE transaksi ADD COLUMN pembayaran TEXT DEFAULT 'TUNAI'"
+    try:
+
+        cursor = conn.cursor()
+
+        # ----------------------------------------------------
+        # MENU / PRODUCTS
+        # ----------------------------------------------------
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS menu (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nama TEXT NOT NULL,
+                kategori TEXT NOT NULL DEFAULT 'Lainnya',
+                harga INTEGER NOT NULL DEFAULT 0
+            )
+            """
         )
-    if "catatan" not in columns:
-        c.execute("ALTER TABLE transaksi ADD COLUMN catatan TEXT DEFAULT ''")
 
-    c.execute("SELECT COUNT(*) FROM menu")
-    if c.fetchone()[0] == 0:
-        sample_menu = [
-            ("Kopi Hitam", "Minuman", 10000),
-            ("Es Teh Manis", "Minuman", 5000),
-            ("Nasi Goreng", "Makanan", 15000),
-            ("Mie Goreng", "Makanan", 12000),
-            ("Roti Bakar", "Snack", 10000),
-            ("Kentang Goreng", "Snack", 12000),
+        # ----------------------------------------------------
+        # TRANSACTIONS
+        # ----------------------------------------------------
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS transaksi (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                faktur TEXT NOT NULL UNIQUE,
+                tanggal TEXT NOT NULL,
+                total INTEGER NOT NULL DEFAULT 0,
+                bayar INTEGER NOT NULL DEFAULT 0,
+                kembali INTEGER NOT NULL DEFAULT 0,
+                pembayaran TEXT NOT NULL DEFAULT 'TUNAI',
+                catatan TEXT DEFAULT ''
+            )
+            """
+        )
+
+        # ----------------------------------------------------
+        # TRANSACTION DETAILS
+        # ----------------------------------------------------
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS detail_transaksi (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                faktur TEXT NOT NULL,
+                menu_id INTEGER NOT NULL,
+                nama TEXT NOT NULL,
+                harga INTEGER NOT NULL DEFAULT 0,
+                jumlah INTEGER NOT NULL DEFAULT 1,
+                subtotal INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+
+        # ----------------------------------------------------
+        # DATABASE MIGRATION
+        # ----------------------------------------------------
+
+        cursor.execute(
+            "PRAGMA table_info(transaksi)"
+        )
+
+        columns = [
+            row[1]
+            for row in cursor.fetchall()
         ]
-        c.executemany(
-            "INSERT INTO menu (nama, kategori, harga) VALUES (?, ?, ?)",
-            sample_menu,
+
+        if "pembayaran" not in columns:
+
+            cursor.execute(
+                """
+                ALTER TABLE transaksi
+                ADD COLUMN pembayaran
+                TEXT DEFAULT 'TUNAI'
+                """
+            )
+
+        if "catatan" not in columns:
+
+            cursor.execute(
+                """
+                ALTER TABLE transaksi
+                ADD COLUMN catatan
+                TEXT DEFAULT ''
+                """
+            )
+
+        # ----------------------------------------------------
+        # SAMPLE PRODUCTS
+        # ----------------------------------------------------
+
+        cursor.execute(
+            "SELECT COUNT(*) FROM menu"
         )
 
-    conn.commit()
-    conn.close()
+        total_products = cursor.fetchone()[0]
+
+        if total_products == 0:
+
+            sample_menu = [
+                (
+                    "Kopi Hitam",
+                    "Minuman",
+                    10000
+                ),
+                (
+                    "Es Teh Manis",
+                    "Minuman",
+                    5000
+                ),
+                (
+                    "Nasi Goreng",
+                    "Makanan",
+                    15000
+                ),
+                (
+                    "Mie Goreng",
+                    "Makanan",
+                    12000
+                ),
+                (
+                    "Roti Bakar",
+                    "Snack",
+                    10000
+                ),
+                (
+                    "Kentang Goreng",
+                    "Snack",
+                    12000
+                ),
+            ]
+
+            cursor.executemany(
+                """
+                INSERT INTO menu
+                (nama, kategori, harga)
+                VALUES (?, ?, ?)
+                """,
+                sample_menu
+            )
+
+        conn.commit()
+
+    except Exception:
+
+        conn.rollback()
+
+        raise
+
+    finally:
+
+        conn.close()
 
 
-def format_rupiah(angka):
-    return f"Rp {angka:,}".replace(",", ".")
+# ============================================================
+# HELPERS
+# ============================================================
 
+def format_rupiah(value):
+    try:
+        value = int(value)
+    except Exception:
+        value = 0
+
+    return "Rp {:,}".format(value).replace(",", ".")
+
+
+def safe_int(value, default=0):
+
+    try:
+        return int(value)
+
+    except (
+        ValueError,
+        TypeError
+    ):
+        return default
+
+
+def make_invoice_number():
+
+    now = datetime.now()
+
+    return (
+        "TRX-"
+        + now.strftime("%Y%m%d%H%M%S")
+        + "-"
+        + now.strftime("%f")[:4]
+    )
+
+
+# ============================================================
+# ROUNDED BUTTON
+# ============================================================
 
 class RoundedButton(Button):
 
-    def __init__(self, bg_color=(0.15, 0.65, 0.6, 1), radius=10, **kwargs):
+    def __init__(
+        self,
+        bg_color=PRIMARY,
+        radius=10,
+        **kwargs
+    ):
+
         super().__init__(**kwargs)
+
         self.bg_color = bg_color
         self.radius = radius
-        self.background_color = (0, 0, 0, 0)
-        self.bind(pos=self.update_canvas, size=self.update_canvas)
 
-    def update_canvas(self, *args):
+        self.background_color = (
+            0,
+            0,
+            0,
+            0
+        )
+
+        self.bind(
+            pos=self.update_canvas,
+            size=self.update_canvas
+        )
+
+    def update_canvas(
+        self,
+        *args
+    ):
+
         self.canvas.before.clear()
+
         with self.canvas.before:
-            Color(*self.bg_color)
-            RoundedRectangle(
-                pos=self.pos, size=self.size, radius=[dp(self.radius)]
+
+            Color(
+                *self.bg_color
             )
 
+            RoundedRectangle(
+                pos=self.pos,
+                size=self.size,
+                radius=[
+                    dp(self.radius)
+                ]
+            )
+
+
+# ============================================================
+# ROUNDED BOX
+# ============================================================
 
 class RoundedBox(BoxLayout):
 
     def __init__(
-        self, bg_color=(1, 1, 1, 1), radius=10, border_color=None, **kwargs
+        self,
+        bg_color=CARD,
+        radius=10,
+        **kwargs
     ):
+
         super().__init__(**kwargs)
+
         self.bg_color = bg_color
         self.radius = radius
-        self.border_color = border_color
-        self.bind(pos=self.update_canvas, size=self.update_canvas)
 
-    def update_canvas(self, *args):
+        self.bind(
+            pos=self.update_canvas,
+            size=self.update_canvas
+        )
+
+    def update_canvas(
+        self,
+        *args
+    ):
+
         self.canvas.before.clear()
+
         with self.canvas.before:
-            Color(*self.bg_color)
+
+            Color(
+                *self.bg_color
+            )
+
             RoundedRectangle(
-                pos=self.pos, size=self.size, radius=[dp(self.radius)]
+                pos=self.pos,
+                size=self.size,
+                radius=[
+                    dp(self.radius)
+                ]
             )
 
 
+# ============================================================
+# POPUP
+# ============================================================
+
 class CustomPopup(Popup):
 
-    def __init__(self, title_text, content_widget, size_hint=(0.85, 0.8)):
-        super().__init__()
+    def __init__(
+        self,
+        title_text,
+        content_widget,
+        size_hint=(0.88, 0.82),
+        **kwargs
+    ):
+
+        super().__init__(
+            **kwargs
+        )
+
         self.title = ""
+
         self.separator_height = 0
+
         self.size_hint = size_hint
+
         self.background = ""
-        self.background_color = (0, 0, 0, 0)
+
+        self.background_color = (
+            0,
+            0,
+            0,
+            0
+        )
 
         main_box = RoundedBox(
             orientation="vertical",
-            bg_color=(0.95, 0.96, 0.98, 1),
+            bg_color=BG,
             radius=15,
-            padding=dp(15),
-            spacing=dp(10),
+            padding=dp(12),
+            spacing=dp(8)
         )
 
         header = RoundedBox(
             size_hint_y=None,
             height=dp(45),
-            bg_color=(0.15, 0.65, 0.6, 1),
+            bg_color=PRIMARY,
             radius=10,
-            padding=[dp(15), 0],
+            padding=[
+                dp(12),
+                0
+            ]
         )
+
         title_label = Label(
             text=title_text,
             font_size=dp(16),
             bold=True,
-            color=(1, 1, 1, 1),
+            color=WHITE,
             halign="left",
-            valign="middle",
+            valign="middle"
         )
-        title_label.bind(size=title_label.setter("text_size"))
-        header.add_widget(title_label)
+
+        title_label.bind(
+            size=title_label.setter(
+                "text_size"
+            )
+        )
+
+        header.add_widget(
+            title_label
+        )
 
         close_btn = Button(
-            text="X",
-            size_hint=(None, None),
-            size=(dp(30), dp(30)),
-            background_color=(0, 0, 0, 0),
-            color=(1, 1, 1, 1),
+            text="×",
+            size_hint=(
+                None,
+                None
+            ),
+            size=(
+                dp(35),
+                dp(35)
+            ),
+            background_color=(
+                0,
+                0,
+                0,
+                0
+            ),
+            color=WHITE,
+            font_size=dp(20),
             bold=True,
-            pos_hint={"center_y": 0.5},
+            pos_hint={
+                "center_y": 0.5
+            }
         )
-        close_btn.bind(on_release=self.dismiss)
-        header.add_widget(close_btn)
 
-        main_box.add_widget(header)
-        main_box.add_widget(content_widget)
+        close_btn.bind(
+            on_release=self.dismiss
+        )
+
+        header.add_widget(
+            close_btn
+        )
+
+        main_box.add_widget(
+            header
+        )
+
+        main_box.add_widget(
+            content_widget
+        )
 
         self.content = main_box
 
 
-class MenuManagementWidget(BoxLayout):
+# ============================================================
+# MESSAGE POPUP
+# ============================================================
 
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+def show_message(
+    title,
+    message
+):
+
+    content = BoxLayout(
+        orientation="vertical",
+        spacing=dp(10),
+        padding=dp(10)
+    )
+
+    label = Label(
+        text=message,
+        color=TEXT,
+        halign="center",
+        valign="middle"
+    )
+
+    label.bind(
+        size=label.setter(
+            "text_size"
+        )
+    )
+
+    content.add_widget(
+        label
+    )
+
+    button = RoundedButton(
+        text="OK",
+        size_hint_y=None,
+        height=dp(42),
+        bg_color=PRIMARY,
+        color=WHITE
+    )
+
+    content.add_widget(
+        button
+    )
+
+    popup = CustomPopup(
+        title,
+        content,
+        size_hint=(
+            0.80,
+            0.45
+        )
+    )
+
+    button.bind(
+        on_release=popup.dismiss
+    )
+
+    popup.open()
+
+
+# ============================================================
+# MENU MANAGEMENT
+# ============================================================
+
+class MenuManagementWidget(
+    BoxLayout
+):
+
+    def __init__(
+        self,
+        **kwargs
+    ):
+
+        super().__init__(
+            **kwargs
+        )
+
         self.orientation = "vertical"
-        self.spacing = dp(10)
+
+        self.spacing = dp(8)
+
+        self.selected_kategori = "Makanan"
+
+        # ----------------------------------------------------
+        # FORM
+        # ----------------------------------------------------
 
         form = RoundedBox(
             orientation="vertical",
-            spacing=dp(8),
+            spacing=dp(7),
             size_hint_y=None,
             height=dp(190),
-            bg_color=(1, 1, 1, 1),
-            padding=dp(10),
+            bg_color=CARD,
+            radius=10,
+            padding=dp(10)
         )
 
         self.txt_nama = TextInput(
-            hint_text="Nama Menu",
+            hint_text="Nama Produk",
             multiline=False,
             size_hint_y=None,
-            height=dp(38),
+            height=dp(38)
         )
 
-        kat_box = BoxLayout(size_hint_y=None, height=dp(38), spacing=dp(5))
-        self.selected_kategori = "Makanan"
-        self.btn_dropdown = RoundedButton(
-            text=f"Kategori: {self.selected_kategori}",
-            bg_color=(0.85, 0.87, 0.9, 1),
-            color=(0.2, 0.2, 0.2, 1),
-            radius=5,
+        # ----------------------------------------------------
+        # CATEGORY
+        # ----------------------------------------------------
+
+        category_box = BoxLayout(
+            size_hint_y=None,
+            height=dp(38),
+            spacing=dp(5)
+        )
+
+        self.btn_category = RoundedButton(
+            text="Kategori: Makanan",
+            bg_color=SOFT,
+            color=TEXT,
+            radius=6
         )
 
         self.dropdown = DropDown()
-        for kat in ["Makanan", "Minuman", "Snack"]:
+
+        for category in CATEGORIES[1:]:
+
             btn = Button(
-                text=kat,
+                text=category,
                 size_hint_y=None,
-                height=dp(35),
+                height=dp(38),
                 background_normal="",
-                background_color=(0.9, 0.92, 0.95, 1),
-                color=(0.2, 0.2, 0.2, 1),
+                background_color=SOFT,
+                color=TEXT
             )
+
             btn.bind(
-                on_release=lambda btn: self.select_kategori(
-                    btn.text, self.dropdown
+                on_release=lambda button,
+                value=category:
+                self.select_category(
+                    value
                 )
             )
-            self.dropdown.add_widget(btn)
 
-        self.btn_dropdown.bind(on_release=self.dropdown.open)
-        kat_box.add_widget(self.btn_dropdown)
+            self.dropdown.add_widget(
+                btn
+            )
+
+        self.btn_category.bind(
+            on_release=self.dropdown.open
+        )
+
+        category_box.add_widget(
+            self.btn_category
+        )
+
+        # ----------------------------------------------------
+        # PRICE
+        # ----------------------------------------------------
 
         self.txt_harga = TextInput(
             hint_text="Harga (Rp)",
             multiline=False,
             input_filter="int",
             size_hint_y=None,
-            height=dp(38),
+            height=dp(38)
         )
 
-        btn_simpan = RoundedButton(
-            text="Tambah Menu",
+        # ----------------------------------------------------
+        # SAVE
+        # ----------------------------------------------------
+
+        save_button = RoundedButton(
+            text="Tambah Produk",
             size_hint_y=None,
             height=dp(40),
-            bg_color=(0.15, 0.65, 0.6, 1),
-            color=(1, 1, 1, 1),
-            bold=True,
+            bg_color=PRIMARY,
+            color=WHITE,
+            bold=True
         )
-        btn_simpan.bind(on_release=self.tambah_menu)
 
-        form.add_widget(self.txt_nama)
-        form.add_widget(kat_box)
-        form.add_widget(self.txt_harga)
-        form.add_widget(btn_simpan)
+        save_button.bind(
+            on_release=self.tambah_menu
+        )
 
-        self.add_widget(form)
+        form.add_widget(
+            self.txt_nama
+        )
+
+        form.add_widget(
+            category_box
+        )
+
+        form.add_widget(
+            self.txt_harga
+        )
+
+        form.add_widget(
+            save_button
+        )
+
+        self.add_widget(
+            form
+        )
+
+        # ----------------------------------------------------
+        # PRODUCT LIST
+        # ----------------------------------------------------
 
         scroll = ScrollView()
+
         self.grid_menu = GridLayout(
-            cols=1, spacing=dp(5), size_hint_y=None, padding=[0, dp(5)]
+            cols=1,
+            spacing=dp(5),
+            size_hint_y=None,
+            padding=[
+                0,
+                dp(5)
+            ]
         )
-        self.grid_menu.bind(minimum_height=self.grid_menu.setter("height"))
-        scroll.add_widget(self.grid_menu)
-        self.add_widget(scroll)
+
+        self.grid_menu.bind(
+            minimum_height=
+            self.grid_menu.setter(
+                "height"
+            )
+        )
+
+        scroll.add_widget(
+            self.grid_menu
+        )
+
+        self.add_widget(
+            scroll
+        )
 
         self.load_menu_list()
 
-    def select_kategori(self, text, dropdown):
-        self.selected_kategori = text
-        self.btn_dropdown.text = f"Kategori: {text}"
-        dropdown.dismiss()
+    def select_category(
+        self,
+        category
+    ):
 
-    def tambah_menu(self, instance):
-        nama = self.txt_nama.text.strip()
-        harga_str = self.txt_harga.text.strip()
+        self.selected_kategori = category
 
-        if not nama or not harga_str:
+        self.btn_category.text = (
+            "Kategori: "
+            + category
+        )
+
+        self.dropdown.dismiss()
+
+    def tambah_menu(
+        self,
+        instance
+    ):
+
+        nama = (
+            self.txt_nama.text
+            .strip()
+        )
+
+        harga_text = (
+            self.txt_harga.text
+            .strip()
+        )
+
+        if not nama:
+
+            show_message(
+                "Produk",
+                "Nama produk belum diisi."
+            )
+
             return
+
+        if not harga_text:
+
+            show_message(
+                "Produk",
+                "Harga produk belum diisi."
+            )
+
+            return
+
+        harga = safe_int(
+            harga_text
+        )
+
+        if harga <= 0:
+
+            show_message(
+                "Produk",
+                "Harga harus lebih besar dari 0."
+            )
+
+            return
+
+        conn = None
 
         try:
-            harga = int(harga_str)
-        except ValueError:
+
+            conn = get_db()
+
+            cursor = conn.cursor()
+
+            cursor.execute(
+                """
+                INSERT INTO menu
+                (nama, kategori, harga)
+                VALUES (?, ?, ?)
+                """,
+                (
+                    nama,
+                    self.selected_kategori,
+                    harga
+                )
+            )
+
+            conn.commit()
+
+        except Exception as error:
+
+            if conn:
+                conn.rollback()
+
+            show_message(
+                "Database",
+                "Gagal menyimpan produk:\n"
+                + str(error)
+            )
+
             return
 
-        conn = get_db()
-        c = conn.cursor()
-        c.execute(
-            "INSERT INTO menu (nama, kategori, harga) VALUES (?, ?, ?)",
-            (nama, self.selected_kategori, harga),
-        )
-        conn.commit()
-        conn.close()
+        finally:
+
+            if conn:
+                conn.close()
 
         self.txt_nama.text = ""
+
         self.txt_harga.text = ""
+
         self.load_menu_list()
 
         app = App.get_running_app()
-        if hasattr(app, "kasir_screen"):
+
+        if hasattr(
+            app,
+            "kasir_screen"
+        ):
+
             app.kasir_screen.load_menu()
 
-    def load_menu_list(self):
-        self.grid_menu.clear_widgets()
-        conn = get_db()
-        c = conn.cursor()
-        c.execute("SELECT * FROM menu ORDER BY id DESC")
-        menus = c.fetchall()
-        conn.close()
+    def load_menu_list(
+        self
+    ):
 
-        for m in menus:
+        self.grid_menu.clear_widgets()
+
+        conn = get_db()
+
+        try:
+
+            cursor = conn.cursor()
+
+            cursor.execute(
+                """
+                SELECT *
+                FROM menu
+                ORDER BY id DESC
+                """
+            )
+
+            products = cursor.fetchall()
+
+        finally:
+
+            conn.close()
+
+        for product in products:
+
             row = RoundedBox(
                 size_hint_y=None,
-                height=dp(50),
-                bg_color=(1, 1, 1, 1),
+                height=dp(55),
+                bg_color=CARD,
+                radius=8,
                 padding=dp(8),
-                spacing=dp(5),
+                spacing=dp(5)
             )
 
-            info_box = BoxLayout(orientation="vertical")
-            lbl_nama = Label(
-                text=f"[b]{m['nama']}[/b]",
+            info = BoxLayout(
+                orientation="vertical"
+            )
+
+            name = Label(
+                text="[b]"
+                + str(product["nama"])
+                + "[/b]",
                 markup=True,
+                color=TEXT,
                 font_size=dp(13),
-                color=(0.2, 0.2, 0.2, 1),
                 halign="left",
-                valign="middle",
+                valign="middle"
             )
-            lbl_nama.bind(size=lbl_nama.setter("text_size"))
-            lbl_sub = Label(
-                text=f"{m['kategori']} • {format_rupiah(m['harga'])}",
-                font_size=dp(11),
-                color=(0.5, 0.5, 0.5, 1),
-                halign="left",
-                valign="middle",
-            )
-            lbl_sub.bind(size=lbl_sub.setter("text_size"))
-            info_box.add_widget(lbl_nama)
-            info_box.add_widget(lbl_sub)
 
-            btn_hapus = RoundedButton(
+            name.bind(
+                size=name.setter(
+                    "text_size"
+                )
+            )
+
+            detail = Label(
+                text=(
+                    str(product["kategori"])
+                    + " • "
+                    + format_rupiah(
+                        product["harga"]
+                    )
+                ),
+                color=TEXT_LIGHT,
+                font_size=dp(10),
+                halign="left",
+                valign="middle"
+            )
+
+            detail.bind(
+                size=detail.setter(
+                    "text_size"
+                )
+            )
+
+            info.add_widget(
+                name
+            )
+
+            info.add_widget(
+                detail
+            )
+
+            delete_button = RoundedButton(
                 text="Hapus",
-                size_hint=(None, None),
-                size=(dp(60), dp(34)),
-                bg_color=(0.9, 0.3, 0.3, 1),
-                color=(1, 1, 1, 1),
-                font_size=dp(11),
-                pos_hint={"center_y": 0.5},
-            )
-            btn_hapus.bind(
-                on_release=lambda btn, menu_id=m["id"]: self.hapus_menu(menu_id)
+                size_hint=(
+                    None,
+                    None
+                ),
+                size=(
+                    dp(60),
+                    dp(34)
+                ),
+                bg_color=DANGER,
+                color=WHITE,
+                font_size=dp(10),
+                pos_hint={
+                    "center_y": 0.5
+                }
             )
 
-            row.add_widget(info_box)
-            row.add_widget(btn_hapus)
-            self.grid_menu.add_widget(row)
+            delete_button.bind(
+                on_release=lambda button,
+                product_id=product["id"]:
+                self.hapus_menu(
+                    product_id
+                )
+            )
 
-    def hapus_menu(self, menu_id):
+            row.add_widget(
+                info
+            )
+
+            row.add_widget(
+                delete_button
+            )
+
+            self.grid_menu.add_widget(
+                row
+            )
+
+    def hapus_menu(
+        self,
+        menu_id
+    ):
+
         conn = get_db()
-        c = conn.cursor()
-        c.execute("DELETE FROM menu WHERE id = ?", (menu_id,))
-        conn.commit()
-        conn.close()
+
+        try:
+
+            cursor = conn.cursor()
+
+            cursor.execute(
+                """
+                DELETE FROM menu
+                WHERE id = ?
+                """,
+                (
+                    menu_id,
+                )
+            )
+
+            conn.commit()
+
+        finally:
+
+            conn.close()
 
         self.load_menu_list()
 
         app = App.get_running_app()
-        if hasattr(app, "kasir_screen"):
+
+        if hasattr(
+            app,
+            "kasir_screen"
+        ):
+
             app.kasir_screen.load_menu()
 
 
-class RiwayatWidget(BoxLayout):
+# ============================================================
+# HISTORY
+# ============================================================
 
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+class RiwayatWidget(
+    BoxLayout
+):
+
+    def __init__(
+        self,
+        **kwargs
+    ):
+
+        super().__init__(
+            **kwargs
+        )
+
         self.orientation = "vertical"
-        self.spacing = dp(10)
 
         scroll = ScrollView()
-        self.grid_riwayat = GridLayout(
-            cols=1, spacing=dp(8), size_hint_y=None, padding=[0, dp(5)]
+
+        self.grid = GridLayout(
+            cols=1,
+            spacing=dp(7),
+            size_hint_y=None,
+            padding=[
+                0,
+                dp(5)
+            ]
         )
-        self.grid_riwayat.bind(minimum_height=self.grid_riwayat.setter("height"))
-        scroll.add_widget(self.grid_riwayat)
-        self.add_widget(scroll)
 
-        self.load_riwayat()
+        self.grid.bind(
+            minimum_height=
+            self.grid.setter(
+                "height"
+            )
+        )
 
-    def load_riwayat(self):
-        self.grid_riwayat.clear_widgets()
+        scroll.add_widget(
+            self.grid
+        )
+
+        self.add_widget(
+            scroll
+        )
+
+        self.load_history()
+
+    def load_history(
+        self
+    ):
+
+        self.grid.clear_widgets()
+
         conn = get_db()
-        c = conn.cursor()
-        c.execute("SELECT * FROM transaksi ORDER BY id DESC")
-        transaksi_list = c.fetchall()
-        conn.close()
 
-        for t in transaksi_list:
+        try:
+
+            cursor = conn.cursor()
+
+            cursor.execute(
+                """
+                SELECT *
+                FROM transaksi
+                ORDER BY id DESC
+                """
+            )
+
+            transactions = cursor.fetchall()
+
+        finally:
+
+            conn.close()
+
+        for transaction in transactions:
+
             row = RoundedBox(
                 orientation="vertical",
                 size_hint_y=None,
-                height=dp(70),
-                bg_color=(1, 1, 1, 1),
-                padding=dp(10),
-                spacing=dp(3),
+                height=dp(72),
+                bg_color=CARD,
+                radius=8,
+                padding=dp(8),
+                spacing=dp(2)
             )
 
-            top_box = BoxLayout()
-            lbl_faktur = Label(
-                text=f"[b]{t['faktur']}[/b]",
+            top = BoxLayout()
+
+            invoice = Label(
+                text=(
+                    "[b]"
+                    + str(
+                        transaction["faktur"]
+                    )
+                    + "[/b]"
+                ),
                 markup=True,
-                font_size=dp(13),
-                color=(0.2, 0.2, 0.2, 1),
-                halign="left",
-                valign="middle",
+                color=TEXT,
+                halign="left"
             )
-            lbl_faktur.bind(size=lbl_faktur.setter("text_size"))
 
-            lbl_total = Label(
-                text=format_rupiah(t["total"]),
-                font_size=dp(13),
+            invoice.bind(
+                size=invoice.setter(
+                    "text_size"
+                )
+            )
+
+            total = Label(
+                text=format_rupiah(
+                    transaction["total"]
+                ),
+                color=PRIMARY,
                 bold=True,
-                color=(0.15, 0.65, 0.6, 1),
-                halign="right",
-                valign="middle",
+                halign="right"
             )
-            lbl_total.bind(size=lbl_total.setter("text_size"))
 
-            top_box.add_widget(lbl_faktur)
-            top_box.add_widget(lbl_total)
-
-            bottom_box = BoxLayout()
-            metode = t["pembayaran"] if "pembayaran" in t.keys() else "TUNAI"
-            lbl_detail = Label(
-                text=f"{t['tanggal']} • {metode}",
-                font_size=dp(11),
-                color=(0.5, 0.5, 0.5, 1),
-                halign="left",
-                valign="middle",
+            total.bind(
+                size=total.setter(
+                    "text_size"
+                )
             )
-            lbl_detail.bind(size=lbl_detail.setter("text_size"))
 
-            btn_detail = RoundedButton(
-                text="Detail",
-                size_hint=(None, None),
-                size=(dp(55), dp(25)),
-                bg_color=(0.85, 0.87, 0.9, 1),
-                color=(0.2, 0.2, 0.2, 1),
+            top.add_widget(
+                invoice
+            )
+
+            top.add_widget(
+                total
+            )
+
+            bottom = BoxLayout()
+
+            method = (
+                transaction["pembayaran"]
+                or "TUNAI"
+            )
+
+            detail = Label(
+                text=(
+                    str(
+                        transaction["tanggal"]
+                    )
+                    + " • "
+                    + str(method)
+                ),
+                color=TEXT_LIGHT,
                 font_size=dp(10),
-            )
-            btn_detail.bind(
-                on_release=lambda btn, faktur=t["faktur"]: self.show_detail(faktur)
+                halign="left"
             )
 
-            bottom_box.add_widget(lbl_detail)
-            bottom_box.add_widget(btn_detail)
+            detail.bind(
+                size=detail.setter(
+                    "text_size"
+                )
+            )
 
-            row.add_widget(top_box)
-            row.add_widget(bottom_box)
-            self.grid_riwayat.add_widget(row)
+            detail_button = RoundedButton(
+                text="Detail",
+                size_hint=(
+                    None,
+                    None
+                ),
+                size=(
+                    dp(60),
+                    dp(28)
+                ),
+                bg_color=SOFT,
+                color=TEXT,
+                font_size=dp(10)
+            )
 
-    def show_detail(self, faktur):
+            detail_button.bind(
+                on_release=lambda button,
+                invoice_number=transaction[
+                    "faktur"
+                ]:
+                self.show_detail(
+                    invoice_number
+                )
+            )
+
+            bottom.add_widget(
+                detail
+            )
+
+            bottom.add_widget(
+                detail_button
+            )
+
+            row.add_widget(
+                top
+            )
+
+            row.add_widget(
+                bottom
+            )
+
+            self.grid.add_widget(
+                row
+            )
+
+    def show_detail(
+        self,
+        faktur
+    ):
+
         conn = get_db()
-        c = conn.cursor()
-        c.execute("SELECT * FROM transaksi WHERE faktur = ?", (faktur,))
-        trans = c.fetchone()
 
-        c.execute("SELECT * FROM detail_transaksi WHERE faktur = ?", (faktur,))
-        details = c.fetchall()
-        conn.close()
+        try:
 
-        if not trans:
+            cursor = conn.cursor()
+
+            cursor.execute(
+                """
+                SELECT *
+                FROM transaksi
+                WHERE faktur = ?
+                """,
+                (
+                    faktur,
+                )
+            )
+
+            transaction = cursor.fetchone()
+
+            cursor.execute(
+                """
+                SELECT *
+                FROM detail_transaksi
+                WHERE faktur = ?
+                ORDER BY id
+                """,
+                (
+                    faktur,
+                )
+            )
+
+            details = cursor.fetchall()
+
+        finally:
+
+            conn.close()
+
+        if not transaction:
+
             return
 
-        detail_box = BoxLayout(orientation="vertical", spacing=dp(8))
-
-        info_str = (
-            f"Faktur: {trans['faktur']}\n"
-            f"Tanggal: {trans['tanggal']}\n"
-            f"Metode: {trans['pembayaran']}\n"
+        content = BoxLayout(
+            orientation="vertical",
+            spacing=dp(7)
         )
-        if trans["catatan"]:
-            info_str += f"Catatan: {trans['catatan']}\n"
 
-        lbl_info = Label(
-            text=info_str,
-            font_size=dp(12),
-            color=(0.3, 0.3, 0.3, 1),
+        info = (
+            "Faktur: "
+            + str(transaction["faktur"])
+            + "\n"
+            + "Tanggal: "
+            + str(transaction["tanggal"])
+            + "\n"
+            + "Metode: "
+            + str(transaction["pembayaran"])
+        )
+
+        if transaction["catatan"]:
+
+            info += (
+                "\nCatatan: "
+                + str(
+                    transaction["catatan"]
+                )
+            )
+
+        info_label = Label(
+            text=info,
+            color=TEXT,
             size_hint_y=None,
-            height=dp(60),
+            height=dp(65),
             halign="left",
+            valign="top"
         )
-        lbl_info.bind(size=lbl_info.setter("text_size"))
-        detail_box.add_widget(lbl_info)
 
-        scroll_item = ScrollView()
-        grid_item = GridLayout(cols=1, spacing=dp(5), size_hint_y=None)
-        grid_item.bind(minimum_height=grid_item.setter("height"))
-
-        for d in details:
-            item_row = BoxLayout(size_hint_y=None, height=dp(25))
-            l1 = Label(
-                text=f"{d['nama']} x{d['jumlah']}",
-                font_size=dp(12),
-                color=(0.2, 0.2, 0.2, 1),
-                halign="left",
+        info_label.bind(
+            size=info_label.setter(
+                "text_size"
             )
-            l1.bind(size=l1.setter("text_size"))
-            l2 = Label(
-                text=format_rupiah(d["subtotal"]),
-                font_size=dp(12),
-                color=(0.2, 0.2, 0.2, 1),
-                halign="right",
-            )
-            l2.bind(size=l2.setter("text_size"))
-            item_row.add_widget(l1)
-            item_row.add_widget(l2)
-            grid_item.add_widget(item_row)
-
-        scroll_item.add_widget(grid_item)
-        detail_box.add_widget(scroll_item)
-
-        tot_str = (
-            f"Total: {format_rupiah(trans['total'])}\n"
-            f"Bayar: {format_rupiah(trans['bayar'])}\n"
-            f"Kembali: {format_rupiah(trans['kembali'])}"
         )
-        lbl_tot = Label(
-            text=tot_str,
-            font_size=dp(12),
+
+        content.add_widget(
+            info_label
+        )
+
+        scroll = ScrollView()
+
+        grid = GridLayout(
+            cols=1,
+            spacing=dp(4),
+            size_hint_y=None
+        )
+
+        grid.bind(
+            minimum_height=
+            grid.setter(
+                "height"
+            )
+        )
+
+        for item in details:
+
+            row = BoxLayout(
+                size_hint_y=None,
+                height=dp(28)
+            )
+
+            left = Label(
+                text=(
+                    str(item["nama"])
+                    + " x"
+                    + str(item["jumlah"])
+                ),
+                color=TEXT,
+                halign="left"
+            )
+
+            right = Label(
+                text=format_rupiah(
+                    item["subtotal"]
+                ),
+                color=TEXT,
+                halign="right"
+            )
+
+            left.bind(
+                size=left.setter(
+                    "text_size"
+                )
+            )
+
+            right.bind(
+                size=right.setter(
+                    "text_size"
+                )
+            )
+
+            row.add_widget(
+                left
+            )
+
+            row.add_widget(
+                right
+            )
+
+            grid.add_widget(
+                row
+            )
+
+        scroll.add_widget(
+            grid
+        )
+
+        content.add_widget(
+            scroll
+        )
+
+        summary = (
+            "Total: "
+            + format_rupiah(
+                transaction["total"]
+            )
+            + "\n"
+            + "Bayar: "
+            + format_rupiah(
+                transaction["bayar"]
+            )
+            + "\n"
+            + "Kembali: "
+            + format_rupiah(
+                transaction["kembali"]
+            )
+        )
+
+        summary_label = Label(
+            text=summary,
+            color=PRIMARY,
             bold=True,
-            color=(0.15, 0.65, 0.6, 1),
             size_hint_y=None,
-            height=dp(55),
-            halign="right",
+            height=dp(65),
+            halign="right"
         )
-        lbl_tot.bind(size=lbl_tot.setter("text_size"))
-        detail_box.add_widget(lbl_tot)
 
-        popup = CustomPopup(f"Detail {faktur}", detail_box)
+        summary_label.bind(
+            size=summary_label.setter(
+                "text_size"
+            )
+        )
+
+        content.add_widget(
+            summary_label
+        )
+
+        popup = CustomPopup(
+            "Detail Transaksi",
+            content,
+            size_hint=(
+                0.90,
+                0.80
+            )
+        )
+
         popup.open()
 
 
-class LaporanWidget(BoxLayout):
+# ============================================================
+# REPORT
+# ============================================================
 
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+class LaporanWidget(
+    BoxLayout
+):
+
+    def __init__(
+        self,
+        **kwargs
+    ):
+
+        super().__init__(
+            **kwargs
+        )
+
         self.orientation = "vertical"
-        self.spacing = dp(10)
 
-        self.lbl_ringkasan = Label(
+        self.spacing = dp(8)
+
+        self.summary = Label(
             text="Memuat laporan...",
             markup=True,
-            font_size=dp(13),
-            color=(0.2, 0.2, 0.2, 1),
-            size_hint_y=None,
-            height=dp(100),
-            halign="left",
-            valign="top",
-        )
-        self.lbl_ringkasan.bind(size=self.lbl_ringkasan.setter("text_size"))
-
-        ringkasan_box = RoundedBox(
-            orientation="vertical",
-            bg_color=(1, 1, 1, 1),
-            padding=dp(12),
+            color=TEXT,
             size_hint_y=None,
             height=dp(120),
-        )
-        ringkasan_box.add_widget(self.lbl_ringkasan)
-        self.add_widget(ringkasan_box)
-
-        lbl_top = Label(
-            text="[b]Menu Terlaris[/b]",
-            markup=True,
-            font_size=dp(14),
-            color=(0.2, 0.2, 0.2, 1),
-            size_hint_y=None,
-            height=dp(25),
             halign="left",
+            valign="top"
         )
-        lbl_top.bind(size=lbl_top.setter("text_size"))
-        self.add_widget(lbl_top)
+
+        self.summary.bind(
+            size=self.summary.setter(
+                "text_size"
+            )
+        )
+
+        summary_box = RoundedBox(
+            orientation="vertical",
+            bg_color=CARD,
+            radius=10,
+            padding=dp(10),
+            size_hint_y=None,
+            height=dp(130)
+        )
+
+        summary_box.add_widget(
+            self.summary
+        )
+
+        self.add_widget(
+            summary_box
+        )
+
+        title = Label(
+            text="[b]Produk Terlaris[/b]",
+            markup=True,
+            color=TEXT,
+            size_hint_y=None,
+            height=dp(28),
+            halign="left"
+        )
+
+        title.bind(
+            size=title.setter(
+                "text_size"
+            )
+        )
+
+        self.add_widget(
+            title
+        )
 
         scroll = ScrollView()
-        self.grid_laris = GridLayout(
-            cols=1, spacing=dp(5), size_hint_y=None, padding=[0, dp(5)]
+
+        self.grid = GridLayout(
+            cols=1,
+            spacing=dp(5),
+            size_hint_y=None
         )
-        self.grid_laris.bind(minimum_height=self.grid_laris.setter("height"))
-        scroll.add_widget(self.grid_laris)
-        self.add_widget(scroll)
 
-        self.load_laporan()
+        self.grid.bind(
+            minimum_height=
+            self.grid.setter(
+                "height"
+            )
+        )
 
-    def load_laporan(self):
+        scroll.add_widget(
+            self.grid
+        )
+
+        self.add_widget(
+            scroll
+        )
+
+        self.load_report()
+
+    def load_report(
+        self
+    ):
+
         conn = get_db()
-        c = conn.cursor()
 
-        c.execute("SELECT COUNT(*), SUM(total) FROM transaksi")
-        res = c.fetchone()
-        tot_trans = res[0] or 0
-        tot_omset = res[1] or 0
+        try:
 
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        c.execute(
-            "SELECT COUNT(*), SUM(total) FROM transaksi WHERE tanggal LIKE ?",
-            (f"{today_str}%",),
+            cursor = conn.cursor()
+
+            cursor.execute(
+                """
+                SELECT
+                    COUNT(*),
+                    COALESCE(SUM(total), 0)
+                FROM transaksi
+                """
+            )
+
+            overall = cursor.fetchone()
+
+            total_transactions = (
+                overall[0] or 0
+            )
+
+            total_sales = (
+                overall[1] or 0
+            )
+
+            today = datetime.now().strftime(
+                "%Y-%m-%d"
+            )
+
+            cursor.execute(
+                """
+                SELECT
+                    COUNT(*),
+                    COALESCE(SUM(total), 0)
+                FROM transaksi
+                WHERE tanggal LIKE ?
+                """,
+                (
+                    today + "%",
+                )
+            )
+
+            today_data = cursor.fetchone()
+
+            today_transactions = (
+                today_data[0] or 0
+            )
+
+            today_sales = (
+                today_data[1] or 0
+            )
+
+            cursor.execute(
+                """
+                SELECT
+                    nama,
+                    SUM(jumlah) AS qty,
+                    SUM(subtotal) AS total
+                FROM detail_transaksi
+                GROUP BY nama
+                ORDER BY qty DESC
+                LIMIT 10
+                """
+            )
+
+            best_sellers = cursor.fetchall()
+
+        finally:
+
+            conn.close()
+
+        self.summary.text = (
+            "[b]Hari Ini[/b]\n"
+            + "Transaksi: "
+            + str(today_transactions)
+            + "\n"
+            + "Omset: "
+            + format_rupiah(
+                today_sales
+            )
+            + "\n\n"
+            + "[b]Keseluruhan[/b]\n"
+            + "Transaksi: "
+            + str(total_transactions)
+            + "\n"
+            + "Omset: "
+            + format_rupiah(
+                total_sales
+            )
         )
-        res_today = c.fetchone()
-        today_trans = res_today[0] or 0
-        today_omset = res_today[1] or 0
 
-        self.lbl_ringkasan.text = (
-            f"[b]Hari Ini ({today_str}):[/b]\n"
-            f"• Transaksi: {today_trans}\n"
-            f"• Omset: {format_rupiah(today_omset)}\n\n"
-            f"[b]Total Keseluruhan:[/b]\n"
-            f"• Transaksi: {tot_trans}\n"
-            f"• Omset: {format_rupiah(tot_omset)}"
-        )
+        self.grid.clear_widgets()
 
-        self.grid_laris.clear_widgets()
-        c.execute(
-            """SELECT nama, SUM(jumlah) as total_qty, SUM(subtotal) as total_rp
-                     FROM detail_transaksi
-                     GROUP BY nama
-                     ORDER BY total_qty DESC
-                     LIMIT 10"""
-        )
-        laris_list = c.fetchall()
-        conn.close()
+        for index, item in enumerate(
+            best_sellers,
+            start=1
+        ):
 
-        for idx, item in enumerate(laris_list, start=1):
             row = RoundedBox(
                 size_hint_y=None,
-                height=dp(40),
-                bg_color=(1, 1, 1, 1),
-                padding=[dp(10), 0],
+                height=dp(42),
+                bg_color=CARD,
+                radius=8,
+                padding=dp(8)
             )
-            l1 = Label(
-                text=f"{idx}. {item['nama']}",
-                font_size=dp(12),
-                color=(0.2, 0.2, 0.2, 1),
-                halign="left",
-                valign="middle",
-            )
-            l1.bind(size=l1.setter("text_size"))
 
-            l2 = Label(
-                text=f"{item['total_qty']} porsi ({format_rupiah(item['total_rp'])})",
-                font_size=dp(12),
+            name = Label(
+                text=(
+                    str(index)
+                    + ". "
+                    + str(item["nama"])
+                ),
+                color=TEXT,
+                halign="left"
+            )
+
+            name.bind(
+                size=name.setter(
+                    "text_size"
+                )
+            )
+
+            value = Label(
+                text=(
+                    str(item["qty"])
+                    + " item • "
+                    + format_rupiah(
+                        item["total"]
+                    )
+                ),
+                color=PRIMARY,
                 bold=True,
-                color=(0.15, 0.65, 0.6, 1),
-                halign="right",
-                valign="middle",
+                halign="right"
             )
-            l2.bind(size=l2.setter("text_size"))
 
-            row.add_widget(l1)
-            row.add_widget(l2)
-            self.grid_laris.add_widget(row)
+            value.bind(
+                size=value.setter(
+                    "text_size"
+                )
+            )
+
+            row.add_widget(
+                name
+            )
+
+            row.add_widget(
+                value
+            )
+
+            self.grid.add_widget(
+                row
+            )
 
 
-class KasirScreen(Screen):
+# ============================================================
+# CASHIER SCREEN
+# ============================================================
 
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+class KasirScreen(
+    Screen
+):
+
+    def __init__(
+        self,
+        **kwargs
+    ):
+
+        super().__init__(
+            **kwargs
+        )
 
         self.cart = {}
+
         self.kategori_aktif = "Semua"
 
-        main_layout = BoxLayout(orientation="vertical", spacing=0)
+        self.build_ui()
+
+    # --------------------------------------------------------
+    # UI
+    # --------------------------------------------------------
+
+    def build_ui(
+        self
+    ):
+
+        main = BoxLayout(
+            orientation="vertical"
+        )
+
+        # ----------------------------------------------------
+        # HEADER
+        # ----------------------------------------------------
 
         header = RoundedBox(
             size_hint_y=None,
             height=dp(55),
-            bg_color=(0.15, 0.65, 0.6, 1),
+            bg_color=PRIMARY,
             radius=0,
-            padding=[dp(15), 0],
+            padding=[
+                dp(10),
+                0
+            ],
+            spacing=dp(5)
         )
-        lbl_title = Label(
-            text="UT Kasirrr",
-            font_size=dp(18),
+
+        title = Label(
+            text="UniversalPOS",
+            color=WHITE,
             bold=True,
-            color=(1, 1, 1, 1),
+            font_size=dp(17),
             halign="left",
-            valign="middle",
+            valign="middle"
         )
-        lbl_title.bind(size=lbl_title.setter("text_size"))
 
-        btn_menu_mgm = RoundedButton(
-            text="Kelola Menu",
-            size_hint=(None, None),
-            size=(dp(90), dp(32)),
-            bg_color=(0.2, 0.75, 0.7, 1),
-            color=(1, 1, 1, 1),
-            font_size=dp(11),
-            pos_hint={"center_y": 0.5},
+        title.bind(
+            size=title.setter(
+                "text_size"
+            )
         )
-        btn_menu_mgm.bind(on_release=self.open_menu_management)
 
-        btn_riwayat = RoundedButton(
+        header.add_widget(
+            title
+        )
+
+        menu_button = RoundedButton(
+            text="Produk",
+            size_hint=(
+                None,
+                None
+            ),
+            size=(
+                dp(68),
+                dp(32)
+            ),
+            bg_color=PRIMARY_DARK,
+            color=WHITE,
+            font_size=dp(10)
+        )
+
+        menu_button.bind(
+            on_release=
+            self.open_menu_management
+        )
+
+        header.add_widget(
+            menu_button
+        )
+
+        history_button = RoundedButton(
             text="Riwayat",
-            size_hint=(None, None),
-            size=(dp(70), dp(32)),
-            bg_color=(0.2, 0.75, 0.7, 1),
-            color=(1, 1, 1, 1),
-            font_size=dp(11),
-            pos_hint={"center_y": 0.5},
+            size_hint=(
+                None,
+                None
+            ),
+            size=(
+                dp(65),
+                dp(32)
+            ),
+            bg_color=PRIMARY_DARK,
+            color=WHITE,
+            font_size=dp(10)
         )
-        btn_riwayat.bind(on_release=self.open_riwayat)
 
-        btn_laporan = RoundedButton(
+        history_button.bind(
+            on_release=
+            self.open_riwayat
+        )
+
+        header.add_widget(
+            history_button
+        )
+
+        report_button = RoundedButton(
             text="Laporan",
-            size_hint=(None, None),
-            size=(dp(70), dp(32)),
-            bg_color=(0.2, 0.75, 0.7, 1),
-            color=(1, 1, 1, 1),
-            font_size=dp(11),
-            pos_hint={"center_y": 0.5},
+            size_hint=(
+                None,
+                None
+            ),
+            size=(
+                dp(68),
+                dp(32)
+            ),
+            bg_color=PRIMARY_DARK,
+            color=WHITE,
+            font_size=dp(10)
         )
-        btn_laporan.bind(on_release=self.open_laporan)
 
-        header.add_widget(lbl_title)
-        header.add_widget(btn_menu_mgm)
-        header.add_widget(BoxLayout(size_hint_x=None, width=dp(5)))
-        header.add_widget(btn_riwayat)
-        header.add_widget(BoxLayout(size_hint_x=None, width=dp(5)))
-        header.add_widget(btn_laporan)
+        report_button.bind(
+            on_release=
+            self.open_laporan
+        )
 
-        main_layout.add_widget(header)
+        header.add_widget(
+            report_button
+        )
+
+        main.add_widget(
+            header
+        )
+
+        # ----------------------------------------------------
+        # CONTENT
+        # ----------------------------------------------------
 
         content = BoxLayout(
-            orientation="horizontal", padding=dp(10), spacing=dp(10)
-        )
-
-        left_side = BoxLayout(orientation="vertical", spacing=dp(10))
-
-        kat_bar = BoxLayout(size_hint_y=None, height=dp(38), spacing=dp(5))
-        self.kat_buttons = {}
-        for kat in ["Semua", "Makanan", "Minuman", "Snack"]:
-            btn = RoundedButton(
-                text=kat,
-                bg_color=(
-                    (0.15, 0.65, 0.6, 1)
-                    if kat == "Semua"
-                    else (0.85, 0.87, 0.9, 1)
-                ),
-                color=((1, 1, 1, 1) if kat == "Semua" else (0.3, 0.3, 0.3, 1)),
-                font_size=dp(12),
-                radius=8,
-            )
-            btn.bind(on_release=lambda instance, k=kat: self.filter_kategori(k))
-            self.kat_buttons[kat] = btn
-            kat_bar.add_widget(btn)
-
-        left_side.add_widget(kat_bar)
-
-        scroll_menu = ScrollView()
-        self.grid_menu = GridLayout(
-            cols=2, spacing=dp(8), size_hint_y=None, padding=[0, dp(2)]
-        )
-        self.grid_menu.bind(minimum_height=self.grid_menu.setter("height"))
-        scroll_menu.add_widget(self.grid_menu)
-
-        left_side.add_widget(scroll_menu)
-
-        right_side = RoundedBox(
-            orientation="vertical",
-            bg_color=(1, 1, 1, 1),
-            radius=12,
-            padding=dp(10),
+            orientation="horizontal",
             spacing=dp(8),
-            size_hint_x=0.45,
+            padding=dp(8)
         )
 
-        lbl_cart_title = Label(
-            text="[b]Pesanan[/b]",
-            markup=True,
-            font_size=dp(14),
-            color=(0.2, 0.2, 0.2, 1),
+        # ----------------------------------------------------
+        # PRODUCTS
+        # ----------------------------------------------------
+
+        left = BoxLayout(
+            orientation="vertical",
+            spacing=dp(7)
+        )
+
+        category_bar = BoxLayout(
             size_hint_y=None,
-            height=dp(25),
-            halign="left",
+            height=dp(38),
+            spacing=dp(4)
         )
-        lbl_cart_title.bind(size=lbl_cart_title.setter("text_size"))
-        right_side.add_widget(lbl_cart_title)
 
-        scroll_cart = ScrollView()
-        self.grid_cart = GridLayout(cols=1, spacing=dp(5), size_hint_y=None)
-        self.grid_cart.bind(minimum_height=self.grid_cart.setter("height"))
-        scroll_cart.add_widget(self.grid_cart)
-        right_side.add_widget(scroll_cart)
+        self.category_buttons = {}
 
-        total_box = BoxLayout(size_hint_y=None, height=dp(30))
-        lbl_tot_text = Label(
-            text="Total:",
-            font_size=dp(13),
-            bold=True,
-            color=(0.2, 0.2, 0.2, 1),
-            halign="left",
-        )
-        lbl_tot_text.bind(size=lbl_tot_text.setter("text_size"))
-        self.lbl_total_val = Label(
-            text="Rp 0",
-            font_size=dp(15),
-            bold=True,
-            color=(0.15, 0.65, 0.6, 1),
-            halign="right",
-        )
-        self.lbl_total_val.bind(size=self.lbl_total_val.setter("text_size"))
-        total_box.add_widget(lbl_tot_text)
-        total_box.add_widget(self.lbl_total_val)
-        right_side.add_widget(total_box)
+        for category in CATEGORIES:
 
-        btn_bayar = RoundedButton(
-            text="BAYAR",
-            size_hint_y=None,
-            height=dp(42),
-            bg_color=(0.15, 0.65, 0.6, 1),
-            color=(1, 1, 1, 1),
-            font_size=dp(14),
-            bold=True,
-        )
-        btn_bayar.bind(on_release=self.open_bayar_popup)
-        right_side.add_widget(btn_bayar)
-
-        content.add_widget(left_side)
-        content.add_widget(right_side)
-
-        main_layout.add_widget(content)
-        self.add_widget(main_layout)
-
-    def on_enter(self):
-        self.load_menu()
-
-    def filter_kategori(self, kategori):
-        self.kategori_aktif = kategori
-        for k, btn in self.kat_buttons.items():
-            if k == kategori:
-                btn.bg_color = (0.15, 0.65, 0.6, 1)
-                btn.color = (1, 1, 1, 1)
-            else:
-                btn.bg_color = (0.85, 0.87, 0.9, 1)
-                btn.color = (0.3, 0.3, 0.3, 1)
-            btn.update_canvas()
-        self.load_menu()
-
-    def load_menu(self):
-        self.grid_menu.clear_widgets()
-        conn = get_db()
-        c = conn.cursor()
-
-        if self.kategori_aktif == "Semua":
-            c.execute("SELECT * FROM menu")
-        else:
-            c.execute(
-                "SELECT * FROM menu WHERE kategori = ?",
-                (self.kategori_aktif,),
+            button = RoundedButton(
+                text=category,
+                bg_color=(
+                    PRIMARY
+                    if category == "Semua"
+                    else SOFT
+                ),
+                color=(
+                    WHITE
+                    if category == "Semua"
+                    else TEXT
+                ),
+                font_size=dp(10),
+                radius=7
             )
 
-        menus = c.fetchall()
-        conn.close()
-
-        for m in menus:
-            btn_item = RoundedBox(
-                orientation="vertical",
-                size_hint_y=None,
-                height=dp(65),
-                bg_color=(1, 1, 1, 1),
-                padding=dp(8),
-                spacing=dp(2),
-            )
-
-            lbl_nama = Label(
-                text=f"[b]{m['nama']}[/b]",
-                markup=True,
-                font_size=dp(12),
-                color=(0.2, 0.2, 0.2, 1),
-                halign="left",
-                valign="top",
-            )
-            lbl_nama.bind(size=lbl_nama.setter("text_size"))
-
-            lbl_harga = Label(
-                text=format_rupiah(m["harga"]),
-                font_size=dp(11),
-                color=(0.15, 0.65, 0.6, 1),
-                bold=True,
-                halign="left",
-                valign="bottom",
-            )
-            lbl_harga.bind(size=lbl_harga.setter("text_size"))
-
-            btn_item.add_widget(lbl_nama)
-            btn_item.add_widget(lbl_harga)
-
-            btn_item.bind(
-                on_touch_down=lambda instance, touch, item=m: self.on_menu_touch(
-                    instance, touch, item
+            button.bind(
+                on_release=lambda instance,
+                value=category:
+                self.filter_category(
+                    value
                 )
             )
 
-            self.grid_menu.add_widget(btn_item)
+            self.category_buttons[
+                category
+            ] = button
 
-    def on_menu_touch(self, instance, touch, item):
-        if instance.collide_point(*touch.pos):
-            self.add_to_cart(item)
+            category_bar.add_widget(
+                button
+            )
+
+        left.add_widget(
+            category_bar
+        )
+
+        product_scroll = ScrollView()
+
+        self.grid_products = GridLayout(
+            cols=2,
+            spacing=dp(7),
+            size_hint_y=None
+        )
+
+        self.grid_products.bind(
+            minimum_height=
+            self.grid_products.setter(
+                "height"
+            )
+        )
+
+        product_scroll.add_widget(
+            self.grid_products
+        )
+
+        left.add_widget(
+            product_scroll
+        )
+
+        # ----------------------------------------------------
+        # CART
+        # ----------------------------------------------------
+
+        right = RoundedBox(
+            orientation="vertical",
+            bg_color=CARD,
+            radius=12,
+            padding=dp(8),
+            spacing=dp(7),
+            size_hint_x=0.45
+        )
+
+        cart_title = Label(
+            text="[b]Pesanan[/b]",
+            markup=True,
+            color=TEXT,
+            size_hint_y=None,
+            height=dp(28),
+            halign="left"
+        )
+
+        cart_title.bind(
+            size=cart_title.setter(
+                "text_size"
+            )
+        )
+
+        right.add_widget(
+            cart_title
+        )
+
+        cart_scroll = ScrollView()
+
+        self.grid_cart = GridLayout(
+            cols=1,
+            spacing=dp(4),
+            size_hint_y=None
+        )
+
+        self.grid_cart.bind(
+            minimum_height=
+            self.grid_cart.setter(
+                "height"
+            )
+        )
+
+        cart_scroll.add_widget(
+            self.grid_cart
+        )
+
+        right.add_widget(
+            cart_scroll
+        )
+
+        total_box = BoxLayout(
+            size_hint_y=None,
+            height=dp(35)
+        )
+
+        total_label = Label(
+            text="TOTAL",
+            color=TEXT,
+            bold=True,
+            halign="left"
+        )
+
+        total_label.bind(
+            size=total_label.setter(
+                "text_size"
+            )
+        )
+
+        self.total_value = Label(
+            text="Rp 0",
+            color=PRIMARY,
+            bold=True,
+            font_size=dp(15),
+            halign="right"
+        )
+
+        self.total_value.bind(
+            size=self.total_value.setter(
+                "text_size"
+            )
+        )
+
+        total_box.add_widget(
+            total_label
+        )
+
+        total_box.add_widget(
+            self.total_value
+        )
+
+        right.add_widget(
+            total_box
+        )
+
+        pay_button = RoundedButton(
+            text="BAYAR",
+            size_hint_y=None,
+            height=dp(44),
+            bg_color=PRIMARY,
+            color=WHITE,
+            bold=True,
+            font_size=dp(14)
+        )
+
+        pay_button.bind(
+            on_release=
+            self.open_payment
+        )
+
+        right.add_widget(
+            pay_button
+        )
+
+        content.add_widget(
+            left
+        )
+
+        content.add_widget(
+            right
+        )
+
+        main.add_widget(
+            content
+        )
+
+        self.add_widget(
+            main
+        )
+
+    # --------------------------------------------------------
+    # SCREEN ENTER
+    # --------------------------------------------------------
+
+    def on_enter(
+        self
+    ):
+
+        self.load_menu()
+
+        self.update_cart_ui()
+
+    # --------------------------------------------------------
+    # CATEGORY
+    # --------------------------------------------------------
+
+    def filter_category(
+        self,
+        category
+    ):
+
+        self.kategori_aktif = category
+
+        for name, button in (
+            self.category_buttons.items()
+        ):
+
+            if name == category:
+
+                button.bg_color = PRIMARY
+                button.color = WHITE
+
+            else:
+
+                button.bg_color = SOFT
+                button.color = TEXT
+
+            button.update_canvas()
+
+        self.load_menu()
+
+    # --------------------------------------------------------
+    # LOAD PRODUCTS
+    # --------------------------------------------------------
+
+    def load_menu(
+        self
+    ):
+
+        self.grid_products.clear_widgets()
+
+        conn = get_db()
+
+        try:
+
+            cursor = conn.cursor()
+
+            if self.kategori_aktif == "Semua":
+
+                cursor.execute(
+                    """
+                    SELECT *
+                    FROM menu
+                    ORDER BY nama
+                    """
+                )
+
+            else:
+
+                cursor.execute(
+                    """
+                    SELECT *
+                    FROM menu
+                    WHERE kategori = ?
+                    ORDER BY nama
+                    """,
+                    (
+                        self.kategori_aktif,
+                    )
+                )
+
+            products = cursor.fetchall()
+
+        finally:
+
+            conn.close()
+
+        for product in products:
+
+            card = RoundedBox(
+                orientation="vertical",
+                size_hint_y=None,
+                height=dp(72),
+                bg_color=CARD,
+                radius=9,
+                padding=dp(7),
+                spacing=dp(2)
+            )
+
+            name = Label(
+                text=(
+                    "[b]"
+                    + str(product["nama"])
+                    + "[/b]"
+                ),
+                markup=True,
+                color=TEXT,
+                font_size=dp(11),
+                halign="left",
+                valign="top"
+            )
+
+            name.bind(
+                size=name.setter(
+                    "text_size"
+                )
+            )
+
+            price = Label(
+                text=format_rupiah(
+                    product["harga"]
+                ),
+                color=PRIMARY,
+                bold=True,
+                font_size=dp(11),
+                halign="left",
+                valign="bottom"
+            )
+
+            price.bind(
+                size=price.setter(
+                    "text_size"
+                )
+            )
+
+            card.add_widget(
+                name
+            )
+
+            card.add_widget(
+                price
+            )
+
+            card.bind(
+                on_touch_down=lambda instance,
+                touch,
+                item=product:
+                self.product_touch(
+                    instance,
+                    touch,
+                    item
+                )
+            )
+
+            self.grid_products.add_widget(
+                card
+            )
+
+    def product_touch(
+        self,
+        instance,
+        touch,
+        item
+    ):
+
+        if instance.collide_point(
+            *touch.pos
+        ):
+
+            self.add_to_cart(
+                item
+            )
+
             return True
+
         return False
 
-    def add_to_cart(self, item):
+    # --------------------------------------------------------
+    # CART
+    # --------------------------------------------------------
+
+    def add_to_cart(
+        self,
+        item
+    ):
+
         item_id = item["id"]
+
         if item_id in self.cart:
-            self.cart[item_id]["jumlah"] += 1
+
+            self.cart[item_id][
+                "jumlah"
+            ] += 1
+
         else:
+
             self.cart[item_id] = {
                 "nama": item["nama"],
                 "harga": item["harga"],
-                "jumlah": 1,
+                "jumlah": 1
             }
+
         self.update_cart_ui()
 
-    def update_cart_ui(self):
-        self.grid_cart.clear_widgets()
-        grand_total = 0
+    def change_qty(
+        self,
+        item_id,
+        delta
+    ):
 
-        for item_id, item in self.cart.items():
-            subtotal = item["harga"] * item["jumlah"]
-            grand_total += subtotal
+        if item_id not in self.cart:
 
-            row = BoxLayout(size_hint_y=None, height=dp(35), spacing=dp(4))
-
-            info_box = BoxLayout(orientation="vertical")
-            lbl_nama = Label(
-                text=item["nama"],
-                font_size=dp(11),
-                color=(0.2, 0.2, 0.2, 1),
-                halign="left",
-            )
-            lbl_nama.bind(size=lbl_nama.setter("text_size"))
-            lbl_sub = Label(
-                text=format_rupiah(subtotal),
-                font_size=dp(10),
-                color=(0.5, 0.5, 0.5, 1),
-                halign="left",
-            )
-            lbl_sub.bind(size=lbl_sub.setter("text_size"))
-            info_box.add_widget(lbl_nama)
-            info_box.add_widget(lbl_sub)
-
-            qty_box = BoxLayout(size_hint_x=None, width=dp(70), spacing=dp(2))
-            btn_min = RoundedButton(
-                text="-",
-                bg_color=(0.85, 0.87, 0.9, 1),
-                color=(0.2, 0.2, 0.2, 1),
-                radius=4,
-            )
-            btn_min.bind(
-                on_release=lambda instance, i_id=item_id: self.change_qty(
-                    i_id, -1
-                )
-            )
-
-            lbl_qty = Label(
-                text=str(item["jumlah"]),
-                font_size=dp(11),
-                color=(0.2, 0.2, 0.2, 1),
-            )
-
-            btn_plus = RoundedButton(
-                text="+",
-                bg_color=(0.85, 0.87, 0.9, 1),
-                color=(0.2, 0.2, 0.2, 1),
-                radius=4,
-            )
-            btn_plus.bind(
-                on_release=lambda instance, i_id=item_id: self.change_qty(
-                    i_id, 1
-                )
-            )
-
-            qty_box.add_widget(btn_min)
-            qty_box.add_widget(lbl_qty)
-            qty_box.add_widget(btn_plus)
-
-            row.add_widget(info_box)
-            row.add_widget(qty_box)
-
-            self.grid_cart.add_widget(row)
-
-        self.lbl_total_val.text = format_rupiah(grand_total)
-
-    def change_qty(self, item_id, delta):
-        if item_id in self.cart:
-            self.cart[item_id]["jumlah"] += delta
-            if self.cart[item_id]["jumlah"] <= 0:
-                del self.cart[item_id]
-            self.update_cart_ui()
-
-    def get_grand_total(self):
-        return sum(
-            item["harga"] * item["jumlah"] for item in self.cart.values()
-        )
-
-    def open_bayar_popup(self, instance):
-        if not self.cart:
             return
 
-        total = self.get_grand_total()
+        self.cart[item_id][
+            "jumlah"
+        ] += delta
 
-        content = BoxLayout(orientation="vertical", spacing=dp(10))
+        if self.cart[item_id][
+            "jumlah"
+        ] <= 0:
 
-        lbl_tot = Label(
-            text=f"Total: [b]{format_rupiah(total)}[/b]",
+            del self.cart[
+                item_id
+            ]
+
+        self.update_cart_ui()
+
+    def get_total(
+        self
+    ):
+
+        return sum(
+            item["harga"]
+            * item["jumlah"]
+            for item in self.cart.values()
+        )
+
+    def update_cart_ui(
+        self
+    ):
+
+        self.grid_cart.clear_widgets()
+
+        total = 0
+
+        for item_id, item in (
+            self.cart.items()
+        ):
+
+            subtotal = (
+                item["harga"]
+                * item["jumlah"]
+            )
+
+            total += subtotal
+
+            row = BoxLayout(
+                size_hint_y=None,
+                height=dp(40),
+                spacing=dp(3)
+            )
+
+            info = BoxLayout(
+                orientation="vertical"
+            )
+
+            name = Label(
+                text=str(
+                    item["nama"]
+                ),
+                color=TEXT,
+                font_size=dp(10),
+                halign="left"
+            )
+
+            name.bind(
+                size=name.setter(
+                    "text_size"
+                )
+            )
+
+            subtotal_label = Label(
+                text=format_rupiah(
+                    subtotal
+                ),
+                color=TEXT_LIGHT,
+                font_size=dp(9),
+                halign="left"
+            )
+
+            subtotal_label.bind(
+                size=subtotal_label.setter(
+                    "text_size"
+                )
+            )
+
+            info.add_widget(
+                name
+            )
+
+            info.add_widget(
+                subtotal_label
+            )
+
+            quantity = BoxLayout(
+                size_hint_x=None,
+                width=dp(75),
+                spacing=dp(2)
+            )
+
+            minus = RoundedButton(
+                text="-",
+                bg_color=SOFT,
+                color=TEXT,
+                radius=4
+            )
+
+            minus.bind(
+                on_release=lambda instance,
+                item_id=item_id:
+                self.change_qty(
+                    item_id,
+                    -1
+                )
+            )
+
+            quantity_label = Label(
+                text=str(
+                    item["jumlah"]
+                ),
+                color=TEXT
+            )
+
+            plus = RoundedButton(
+                text="+",
+                bg_color=SOFT,
+                color=TEXT,
+                radius=4
+            )
+
+            plus.bind(
+                on_release=lambda instance,
+                item_id=item_id:
+                self.change_qty(
+                    item_id,
+                    1
+                )
+            )
+
+            quantity.add_widget(
+                minus
+            )
+
+            quantity.add_widget(
+                quantity_label
+            )
+
+            quantity.add_widget(
+                plus
+            )
+
+            row.add_widget(
+                info
+            )
+
+            row.add_widget(
+                quantity
+            )
+
+            self.grid_cart.add_widget(
+                row
+            )
+
+        self.total_value.text = (
+            format_rupiah(
+                total
+            )
+        )
+
+    # --------------------------------------------------------
+    # PAYMENT
+    # --------------------------------------------------------
+
+    def open_payment(
+        self,
+        instance
+    ):
+
+        if not self.cart:
+
+            show_message(
+                "Pembayaran",
+                "Keranjang masih kosong."
+            )
+
+            return
+
+        total = self.get_total()
+
+        content = BoxLayout(
+            orientation="vertical",
+            spacing=dp(8)
+        )
+
+        total_label = Label(
+            text=(
+                "[b]Total: "
+                + format_rupiah(total)
+                + "[/b]"
+            ),
             markup=True,
+            color=PRIMARY,
             font_size=dp(16),
-            color=(0.15, 0.65, 0.6, 1),
             size_hint_y=None,
-            height=dp(30),
+            height=dp(35)
         )
-        content.add_widget(lbl_tot)
 
-        lbl_metode = Label(
-            text="Metode Pembayaran:",
-            font_size=dp(12),
-            color=(0.3, 0.3, 0.3, 1),
+        content.add_widget(
+            total_label
+        )
+
+        method_label = Label(
+            text="Metode Pembayaran",
+            color=TEXT,
             size_hint_y=None,
-            height=dp(20),
-            halign="left",
-        )
-        lbl_metode.bind(size=lbl_metode.setter("text_size"))
-        content.add_widget(lbl_metode)
-
-        self.selected_metode = "TUNAI"
-        metode_box = BoxLayout(size_hint_y=None, height=dp(35), spacing=dp(5))
-        self.btn_metode_tunai = RoundedButton(
-            text="TUNAI",
-            bg_color=(0.15, 0.65, 0.6, 1),
-            color=(1, 1, 1, 1),
-            radius=6,
-        )
-        self.btn_metode_qris = RoundedButton(
-            text="QRIS / DEBIT",
-            bg_color=(0.85, 0.87, 0.9, 1),
-            color=(0.3, 0.3, 0.3, 1),
-            radius=6,
+            height=dp(22),
+            halign="left"
         )
 
-        self.btn_metode_tunai.bind(
-            on_release=lambda x: self.select_metode("TUNAI")
-        )
-        self.btn_metode_qris.bind(
-            on_release=lambda x: self.select_metode("QRIS / DEBIT")
+        method_label.bind(
+            size=method_label.setter(
+                "text_size"
+            )
         )
 
-        metode_box.add_widget(self.btn_metode_tunai)
-        metode_box.add_widget(self.btn_metode_qris)
-        content.add_widget(metode_box)
+        content.add_widget(
+            method_label
+        )
+
+        self.selected_method = "TUNAI"
+
+        method_scroll = ScrollView(
+            size_hint_y=None,
+            height=dp(42),
+            do_scroll_y=False
+        )
+
+        method_box = BoxLayout(
+            size_hint_x=None,
+            width=dp(
+                90
+                * len(
+                    PAYMENT_METHODS
+                )
+            ),
+            spacing=dp(4)
+        )
+
+        self.payment_buttons = {}
+
+        for method in PAYMENT_METHODS:
+
+            button = RoundedButton(
+                text=method,
+                size_hint_x=None,
+                width=dp(85),
+                bg_color=(
+                    PRIMARY
+                    if method == "TUNAI"
+                    else SOFT
+                ),
+                color=(
+                    WHITE
+                    if method == "TUNAI"
+                    else TEXT
+                ),
+                font_size=dp(9),
+                radius=6
+            )
+
+            button.bind(
+                on_release=lambda instance,
+                value=method:
+                self.select_payment(
+                    value
+                )
+            )
+
+            self.payment_buttons[
+                method
+            ] = button
+
+            method_box.add_widget(
+                button
+            )
+
+        method_scroll.add_widget(
+            method_box
+        )
+
+        content.add_widget(
+            method_scroll
+        )
 
         self.txt_bayar = TextInput(
-            hint_text="Nominal Bayar (Rp)",
+            hint_text="Nominal pembayaran",
             multiline=False,
             input_filter="int",
             size_hint_y=None,
-            height=dp(40),
-            font_size=dp(14),
+            height=dp(40)
         )
-        content.add_widget(self.txt_bayar)
 
-        quick_box = BoxLayout(size_hint_y=None, height=dp(32), spacing=dp(5))
-        btn_pas = RoundedButton(
-            text="Uang Pas",
-            bg_color=(0.85, 0.87, 0.9, 1),
-            color=(0.2, 0.2, 0.2, 1),
-            font_size=dp(10),
-            radius=5,
+        content.add_widget(
+            self.txt_bayar
         )
-        btn_pas.bind(on_release=lambda x: self.set_bayar_quick(total))
 
-        btn_50 = RoundedButton(
-            text="50.000",
-            bg_color=(0.85, 0.87, 0.9, 1),
-            color=(0.2, 0.2, 0.2, 1),
-            font_size=dp(10),
-            radius=5,
-        )
-        btn_50.bind(on_release=lambda x: self.set_bayar_quick(50000))
-
-        btn_100 = RoundedButton(
-            text="100.000",
-            bg_color=(0.85, 0.87, 0.9, 1),
-            color=(0.2, 0.2, 0.2, 1),
-            font_size=dp(10),
-            radius=5,
-        )
-        btn_100.bind(on_release=lambda x: self.set_bayar_quick(100000))
-
-        quick_box.add_widget(btn_pas)
-        quick_box.add_widget(btn_50)
-        quick_box.add_widget(btn_100)
-        content.add_widget(quick_box)
-
-        self.txt_catatan = TextInput(
-            hint_text="Catatan (opsional)",
-            multiline=False,
+        quick = BoxLayout(
             size_hint_y=None,
             height=dp(35),
-            font_size=dp(12),
+            spacing=dp(4)
         )
-        content.add_widget(self.txt_catatan)
 
-        btn_proses = RoundedButton(
+        quick_values = [
+            (
+                "Uang Pas",
+                total
+            ),
+            (
+                "50.000",
+                50000
+            ),
+            (
+                "100.000",
+                100000
+            )
+        ]
+
+        for label, value in quick_values:
+
+            button = RoundedButton(
+                text=label,
+                bg_color=SOFT,
+                color=TEXT,
+                font_size=dp(9),
+                radius=5
+            )
+
+            button.bind(
+                on_release=lambda instance,
+                amount=value:
+                self.set_payment_amount(
+                    amount
+                )
+            )
+
+            quick.add_widget(
+                button
+            )
+
+        content.add_widget(
+            quick
+        )
+
+        self.txt_catatan = TextInput(
+            hint_text="Catatan transaksi (opsional)",
+            multiline=False,
+            size_hint_y=None,
+            height=dp(38)
+        )
+
+        content.add_widget(
+            self.txt_catatan
+        )
+
+        process_button = RoundedButton(
             text="PROSES TRANSAKSI",
             size_hint_y=None,
-            height=dp(42),
-            bg_color=(0.15, 0.65, 0.6, 1),
-            color=(1, 1, 1, 1),
-            bold=True,
+            height=dp(44),
+            bg_color=PRIMARY,
+            color=WHITE,
+            bold=True
         )
-        btn_proses.bind(on_release=self.proses_transaksi)
-        content.add_widget(btn_proses)
 
-        self.popup_bayar = CustomPopup(
-            "Pembayaran", content, size_hint=(0.8, 0.75)
+        process_button.bind(
+            on_release=
+            self.process_transaction
         )
-        self.popup_bayar.open()
 
-    def select_metode(self, metode):
-        self.selected_metode = metode
-        if metode == "TUNAI":
-            self.btn_metode_tunai.bg_color = (0.15, 0.65, 0.6, 1)
-            self.btn_metode_tunai.color = (1, 1, 1, 1)
-            self.btn_metode_qris.bg_color = (0.85, 0.87, 0.9, 1)
-            self.btn_metode_qris.color = (0.3, 0.3, 0.3, 1)
-        else:
-            self.btn_metode_qris.bg_color = (0.15, 0.65, 0.6, 1)
-            self.btn_metode_qris.color = (1, 1, 1, 1)
-            self.btn_metode_tunai.bg_color = (0.85, 0.87, 0.9, 1)
-            self.btn_metode_tunai.color = (0.3, 0.3, 0.3, 1)
-        self.btn_metode_tunai.update_canvas()
-        self.btn_metode_qris.update_canvas()
+        content.add_widget(
+            process_button
+        )
 
-    def set_bayar_quick(self, nominal):
-        self.txt_bayar.text = str(nominal)
+        self.payment_popup = CustomPopup(
+            "Pembayaran",
+            content,
+            size_hint=(
+                0.92,
+                0.80
+            )
+        )
 
-    def proses_transaksi(self, instance):
-        total = self.get_grand_total()
-        bayar_str = self.txt_bayar.text.strip()
+        self.payment_popup.open()
 
-        if not bayar_str:
+    def select_payment(
+        self,
+        method
+    ):
+
+        self.selected_method = method
+
+        for name, button in (
+            self.payment_buttons.items()
+        ):
+
+            if name == method:
+
+                button.bg_color = PRIMARY
+                button.color = WHITE
+
+            else:
+
+                button.bg_color = SOFT
+                button.color = TEXT
+
+            button.update_canvas()
+
+    def set_payment_amount(
+        self,
+        amount
+    ):
+
+        self.txt_bayar.text = str(
+            amount
+        )
+
+    # --------------------------------------------------------
+    # PROCESS TRANSACTION
+    # --------------------------------------------------------
+
+    def process_transaction(
+        self,
+        instance
+    ):
+
+        total = self.get_total()
+
+        if total <= 0:
+
             return
+
+        payment_text = (
+            self.txt_bayar.text
+            .strip()
+        )
+
+        if not payment_text:
+
+            show_message(
+                "Pembayaran",
+                "Masukkan nominal pembayaran."
+            )
+
+            return
+
+        payment = safe_int(
+            payment_text
+        )
+
+        if payment < total:
+
+            show_message(
+                "Pembayaran",
+                "Nominal pembayaran kurang "
+                + format_rupiah(
+                    total - payment
+                )
+            )
+
+            return
+
+        change = (
+            payment - total
+        )
+
+        # ----------------------------------------------------
+        # IMPORTANT:
+        # Create transaction snapshot BEFORE clearing cart.
+        # ----------------------------------------------------
+
+        cart_snapshot = []
+
+        for item_id, item in (
+            self.cart.items()
+        ):
+
+            cart_snapshot.append(
+                {
+                    "id": item_id,
+                    "nama": item["nama"],
+                    "harga": item["harga"],
+                    "jumlah": item["jumlah"],
+                    "subtotal": (
+                        item["harga"]
+                        * item["jumlah"]
+                    )
+                }
+            )
+
+        invoice = make_invoice_number()
+
+        timestamp = datetime.now().strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+
+        note = (
+            self.txt_catatan.text
+            .strip()
+        )
+
+        conn = None
 
         try:
-            bayar = int(bayar_str)
-        except ValueError:
-            return
 
-        if bayar < total:
-            return
+            conn = get_db()
 
-        kembali = bayar - total
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        faktur = f"TRX-{datetime.now().strftime('%Y%m%d%H%M%S')}"
-        catatan = self.txt_catatan.text.strip()
+            cursor = conn.cursor()
 
-        conn = get_db()
-        c = conn.cursor()
-        c.execute(
-            """INSERT INTO transaksi (faktur, tanggal, total, bayar, kembali, pembayaran, catatan)
-                     VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (
-                faktur,
-                now_str,
-                total,
-                bayar,
-                kembali,
-                self.selected_metode,
-                catatan,
-            ),
-        )
-
-        for item_id, item in self.cart.items():
-            subtotal = item["harga"] * item["jumlah"]
-            c.execute(
-                """INSERT INTO detail_transaksi (faktur, menu_id, nama, harga, jumlah, subtotal)
-                         VALUES (?, ?, ?, ?, ?, ?)""",
+            cursor.execute(
+                """
+                INSERT INTO transaksi
                 (
                     faktur,
-                    item_id,
-                    item["nama"],
-                    item["harga"],
-                    item["jumlah"],
-                    subtotal,
-                ),
+                    tanggal,
+                    total,
+                    bayar,
+                    kembali,
+                    pembayaran,
+                    catatan
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    invoice,
+                    timestamp,
+                    total,
+                    payment,
+                    change,
+                    self.selected_method,
+                    note
+                )
             )
 
-        conn.commit()
-        conn.close()
+            for item in cart_snapshot:
 
-        self.popup_bayar.dismiss()
-        self.show_struk(faktur, now_str, total, bayar, kembali, catatan)
+                cursor.execute(
+                    """
+                    INSERT INTO detail_transaksi
+                    (
+                        faktur,
+                        menu_id,
+                        nama,
+                        harga,
+                        jumlah,
+                        subtotal
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        invoice,
+                        item["id"],
+                        item["nama"],
+                        item["harga"],
+                        item["jumlah"],
+                        item["subtotal"]
+                    )
+                )
+
+            conn.commit()
+
+        except Exception as error:
+
+            if conn:
+
+                conn.rollback()
+
+            show_message(
+                "Transaksi Gagal",
+                str(error)
+            )
+
+            return
+
+        finally:
+
+            if conn:
+
+                conn.close()
+
+        if hasattr(
+            self,
+            "payment_popup"
+        ):
+
+            self.payment_popup.dismiss()
+
+        # ----------------------------------------------------
+        # Clear cart AFTER successful database transaction.
+        # ----------------------------------------------------
 
         self.cart.clear()
+
         self.update_cart_ui()
 
-    def show_struk(self, faktur, tanggal, total, bayar, kembali, catatan):
-        content = BoxLayout(orientation="vertical", spacing=dp(8))
-
-        struk_text = (
-            f"[b]UT KASIRRR[/b]\n"
-            f"Faktur: {faktur}\n"
-            f"Tgl: {tanggal}\n"
-            f"Metode: {self.selected_metode}\n"
-            f"-----------------------------------\n"
+        self.show_receipt(
+            invoice,
+            timestamp,
+            total,
+            payment,
+            change,
+            self.selected_method,
+            note,
+            cart_snapshot
         )
 
-        for item in self.cart.values():
-            subtotal = item["harga"] * item["jumlah"]
-            struk_text += f"{item['nama']} x{item['jumlah']} = {format_rupiah(subtotal)}\n"
+    # --------------------------------------------------------
+    # RECEIPT
+    # --------------------------------------------------------
 
-        struk_text += (
-            f"-----------------------------------\n"
-            f"Total: {format_rupiah(total)}\n"
-            f"Bayar: {format_rupiah(bayar)}\n"
-            f"Kembali: {format_rupiah(kembali)}\n"
+    def show_receipt(
+        self,
+        invoice,
+        timestamp,
+        total,
+        payment,
+        change,
+        method,
+        note,
+        items
+    ):
+
+        content = BoxLayout(
+            orientation="vertical",
+            spacing=dp(8)
         )
 
-        if catatan:
-            struk_text += f"Catatan: {catatan}\n"
+        receipt = (
+            "[b]UNIVERSAL POS[/b]\n"
+            "--------------------------------\n"
+            "Faktur: "
+            + invoice
+            + "\n"
+            + "Tanggal: "
+            + timestamp
+            + "\n"
+            + "Metode: "
+            + method
+            + "\n"
+            + "--------------------------------\n"
+        )
 
-        struk_text += "\nTerima kasih telah berbelanja!"
+        for item in items:
+
+            receipt += (
+                str(item["nama"])
+                + "\n"
+                + str(item["jumlah"])
+                + " x "
+                + format_rupiah(
+                    item["harga"]
+                )
+                + " = "
+                + format_rupiah(
+                    item["subtotal"]
+                )
+                + "\n"
+            )
+
+        receipt += (
+            "--------------------------------\n"
+            "TOTAL  : "
+            + format_rupiah(total)
+            + "\n"
+            "BAYAR  : "
+            + format_rupiah(payment)
+            + "\n"
+            "KEMBALI: "
+            + format_rupiah(change)
+            + "\n"
+        )
+
+        if note:
+
+            receipt += (
+                "Catatan: "
+                + note
+                + "\n"
+            )
+
+        receipt += (
+            "--------------------------------\n"
+            "Terima kasih telah berbelanja."
+        )
 
         scroll = ScrollView()
-        lbl_struk = Label(
-            text=struk_text,
+
+        receipt_label = Label(
+            text=receipt,
             markup=True,
+            color=TEXT,
             font_size=dp(11),
-            color=(0.2, 0.2, 0.2, 1),
             size_hint_y=None,
-            halign="center",
+            halign="left",
+            valign="top"
         )
-        lbl_struk.bind(
-            texture_size=lambda instance, value: setattr(
-                instance, "height", value[1]
+
+        receipt_label.bind(
+            texture_size=lambda instance,
+            value:
+            setattr(
+                instance,
+                "height",
+                value[1]
             )
         )
-        scroll.add_widget(lbl_struk)
-        content.add_widget(scroll)
 
-        popup = CustomPopup("Struk Transaksi", content, size_hint=(0.8, 0.8))
+        scroll.add_widget(
+            receipt_label
+        )
+
+        content.add_widget(
+            scroll
+        )
+
+        close = RoundedButton(
+            text="SELESAI",
+            size_hint_y=None,
+            height=dp(42),
+            bg_color=PRIMARY,
+            color=WHITE,
+            bold=True
+        )
+
+        content.add_widget(
+            close
+        )
+
+        popup = CustomPopup(
+            "Struk Transaksi",
+            content,
+            size_hint=(
+                0.90,
+                0.82
+            )
+        )
+
+        close.bind(
+            on_release=popup.dismiss
+        )
+
         popup.open()
 
-    def open_menu_management(self, instance):
+    # --------------------------------------------------------
+    # POPUPS
+    # --------------------------------------------------------
+
+    def open_menu_management(
+        self,
+        instance
+    ):
+
         widget = MenuManagementWidget()
-        popup = CustomPopup("Kelola Menu", widget, size_hint=(0.85, 0.85))
+
+        popup = CustomPopup(
+            "Kelola Produk",
+            widget,
+            size_hint=(
+                0.92,
+                0.88
+            )
+        )
+
         popup.open()
 
-    def open_riwayat(self, instance):
+    def open_riwayat(
+        self,
+        instance
+    ):
+
         widget = RiwayatWidget()
-        popup = CustomPopup("Riwayat Transaksi", widget, size_hint=(0.85, 0.85))
+
+        popup = CustomPopup(
+            "Riwayat Transaksi",
+            widget,
+            size_hint=(
+                0.92,
+                0.85
+            )
+        )
+
         popup.open()
 
-    def open_laporan(self, instance):
+    def open_laporan(
+        self,
+        instance
+    ):
+
         widget = LaporanWidget()
-        popup = CustomPopup("Laporan Penjualan", widget, size_hint=(0.85, 0.85))
+
+        popup = CustomPopup(
+            "Laporan Penjualan",
+            widget,
+            size_hint=(
+                0.92,
+                0.85
+            )
+        )
+
         popup.open()
 
 
-class KasirApp(App):
+# ============================================================
+# APPLICATION
+# ============================================================
 
-    def build(self):
-        sm = ScreenManager()
-        self.kasir_screen = KasirScreen(name="kasir")
-        sm.add_widget(self.kasir_screen)
-        return sm
+class KasirApp(
+    App
+):
 
-    def on_start(self):
-        # Minta izin penyimpanan khusus jika dijalankan di perangkat Android
-        if platform == "android":
-            try:
-                from android.permissions import Permission, request_permissions
+    def build(
+        self
+    ):
 
-                request_permissions(
-                    [
-                        Permission.READ_EXTERNAL_STORAGE,
-                        Permission.WRITE_EXTERNAL_STORAGE,
-                    ]
+        # ====================================================
+        # CRITICAL FIX
+        # ====================================================
+        # Database is initialized BEFORE KasirScreen.
+        #
+        # In the old source:
+        #
+        # build()
+        #   -> KasirScreen()
+        #   -> on_enter()
+        #   -> load_menu()
+        #   -> SELECT FROM menu
+        #
+        # while init_db() was only called later in on_start().
+        #
+        # This version fixes that order.
+        # ====================================================
+
+        try:
+
+            init_db()
+
+            print(
+                "DATABASE INITIALIZATION SUCCESS"
+            )
+
+        except Exception as error:
+
+            print(
+                "DATABASE INITIALIZATION ERROR:",
+                repr(error)
+            )
+
+            # Show a minimal UI instead of silently
+            # failing during application startup.
+
+            error_screen = Screen(
+                name="error"
+            )
+
+            layout = BoxLayout(
+                orientation="vertical",
+                padding=dp(20),
+                spacing=dp(15)
+            )
+
+            title = Label(
+                text="UniversalPOS",
+                font_size=dp(22),
+                bold=True,
+                color=PRIMARY,
+                size_hint_y=None,
+                height=dp(45)
+            )
+
+            message = Label(
+                text=(
+                    "Database gagal diinisialisasi.\n\n"
+                    + str(error)
+                ),
+                color=TEXT,
+                halign="center",
+                valign="middle"
+            )
+
+            message.bind(
+                size=message.setter(
+                    "text_size"
                 )
-            except Exception:
-                pass
+            )
 
-        # Inisialisasi database dijalankan secara aman setelah aplikasi siap
-        init_db()
+            layout.add_widget(
+                title
+            )
 
+            layout.add_widget(
+                message
+            )
+
+            error_screen.add_widget(
+                layout
+            )
+
+            manager = ScreenManager()
+
+            manager.add_widget(
+                error_screen
+            )
+
+            return manager
+
+        # ====================================================
+        # CREATE MAIN SCREEN
+        # ====================================================
+
+        manager = ScreenManager()
+
+        self.kasir_screen = KasirScreen(
+            name="kasir"
+        )
+
+        manager.add_widget(
+            self.kasir_screen
+        )
+
+        return manager
+
+    def on_start(
+        self
+    ):
+
+        # ====================================================
+        # IMPORTANT:
+        # Database initialization is NO LONGER done here.
+        #
+        # It is already completed in build().
+        #
+        # This prevents the old startup ordering problem.
+        # ====================================================
+
+        if platform == "android":
+
+            try:
+
+                from android.permissions import (
+                    Permission,
+                    request_permissions
+                )
+
+                permissions = []
+
+                # Do NOT request storage permissions
+                # for SQLite database.
+                #
+                # SQLite is stored inside user_data_dir.
+                #
+                # These are kept only for future compatibility
+                # with Android versions where they exist.
+
+                if hasattr(
+                    Permission,
+                    "BLUETOOTH_CONNECT"
+                ):
+
+                    permissions.append(
+                        Permission.BLUETOOTH_CONNECT
+                    )
+
+                if hasattr(
+                    Permission,
+                    "BLUETOOTH_SCAN"
+                ):
+
+                    permissions.append(
+                        Permission.BLUETOOTH_SCAN
+                    )
+
+                if permissions:
+
+                    request_permissions(
+                        permissions
+                    )
+
+            except Exception as error:
+
+                print(
+                    "ANDROID PERMISSION WARNING:",
+                    repr(error)
+                )
+
+
+# ============================================================
+# ENTRY POINT
+# ============================================================
 
 if __name__ == "__main__":
+
     KasirApp().run()
