@@ -1,0 +1,44 @@
+# Python
+
+**pycache**/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+
+.venv/
+venv/
+env/
+
+# Buildozer
+
+.buildozer/
+bin/
+
+# Android
+
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# SQLite runtime database
+
+*.db
+*.sqlite
+*.sqlite3
+
+# IDE
+
+.vscode/
+.idea/
+
+# OS
+
+.DS_Store
+Thumbs.db
+
+# Logs
+
+*.log
