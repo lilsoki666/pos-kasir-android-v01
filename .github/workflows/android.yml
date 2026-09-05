@@ -194,10 +194,10 @@ jobs:
       # REMOVE OLD BUILDOZER SDK
       # ==========================================
 
-      - name: Clear Old Buildozer SDK
+      - name: Clear Old Buildozer Cache
         run: |
-
-          rm -rf ~/.buildozer/android/platform/android-sdk || true
+          rm -rf ~/.buildozer
+          rm -rf .buildozer
 
 
       # ==========================================
