@@ -1,59 +1,163 @@
 [app]
 
-# (str) Title of your application
-title = UT Kasirrr
+# ------------------------------------------------------------
 
-# (str) Package name
-package.name = utkasir
+# BASIC APPLICATION
 
-# (str) Package domain (needed for android/ios packaging)
-package.domain = org.test
+# ------------------------------------------------------------
 
-# (str) Application version (WAJIB ADA)
-version = 0.1
+title = UniversalPOS
 
-# (str) Source code where the main.py live
+package.name = universalpos
+
+package.domain = com.universalpos
+
 source.dir = .
 
-# (list) Source files to include (include db for sample data if needed)
-source.include_exts = py,png,jpg,kv,atlas,db
+source.main = main.py
 
-# (list) Application requirements
-# PENTING: Hapus versi spesifik dan pyjnius dari requirements.
-# Biarkan p4a memuat versi pyjnius/sdl2 yang sesuai secara otomatis.
+source.include_exts = py,png,jpg,jpeg,kv,atlas,txt,json,db,svg
+
+version = 0.1.0
+
+# JANGAN tambahkan version.regex.
+
+# Gunakan version SAJA untuk menghindari:
+
+# Conflict between "version" and "version.regex"
+
+# ------------------------------------------------------------
+
+# REQUIREMENTS
+
+# ------------------------------------------------------------
+
 requirements = python3,kivy
 
-# (str) Supported orientation (landscape, portrait or all)
+# PyJNIus JANGAN ditulis manual di sini untuk versi stabil dasar.
+
+# ------------------------------------------------------------
+
+# DISPLAY
+
+# ------------------------------------------------------------
+
 orientation = portrait
 
-# (bool) Indicate if the application should be fullscreen or not
 fullscreen = 0
 
-# (list) Permissions
-android.permissions = INTERNET, READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE
+# ------------------------------------------------------------
 
-# (int) Target Android API
+# ANDROID
+
+# ------------------------------------------------------------
+
 android.api = 33
 
-# (str) Android Build Tools version (TAMBAHKAN/SESUAIKAN BARIS INI)
-android.build_tools_version = 33.0.0
-
-# (int) Minimum API required
 android.minapi = 24
 
-# (str) Android NDK version
 android.ndk = 25b
-# (list) The Android archs to build for
-# PENTING: Wajib tambahkan ini agar kompatibel dengan HP Android modern (64-bit)
-android.archs = arm64-v8a, armeabi-v7a
 
-# (bool) Enable AndroidX support
+android.build_tools_version = 33.0.2
+
+android.archs = arm64-v8a,armeabi-v7a
+
 android.androidx = True
+
+# ------------------------------------------------------------
+
+# ANDROID PERMISSIONS
+
+# ------------------------------------------------------------
+
+android.permissions = INTERNET,BLUETOOTH,BLUETOOTH_ADMIN,BLUETOOTH_CONNECT,BLUETOOTH_SCAN
+
+# ------------------------------------------------------------
+
+# ICON
+
+# ------------------------------------------------------------
+
+icon.filename = %(source.dir)s/assets/icon.png
+
+# ------------------------------------------------------------
+
+# PRESPLASH
+
+# ------------------------------------------------------------
+
+# Aktifkan hanya jika file berikut benar-benar tersedia:
+
+#
+
+# presplash.filename = %(source.dir)s/assets/presplash.png
+
+# ------------------------------------------------------------
+
+# ANDROID BACKGROUND / LOGCAT
+
+# ------------------------------------------------------------
+
+android.add_src = src
+
+android.entrypoint = org.kivy.android.PythonActivity
+
+# ------------------------------------------------------------
+
+# PYTHON FOR ANDROID
+
+# ------------------------------------------------------------
+
+p4a.bootstrap = sdl2
+
+# ------------------------------------------------------------
+
+# BUILD SETTINGS
+
+# ------------------------------------------------------------
+
+android.accept_sdk_license = True
+
+android.release_artifact = apk
+
+android.debug_artifact = apk
+
+# ------------------------------------------------------------
+
+# STORAGE / FILES
+
+# ------------------------------------------------------------
+
+# Database aplikasi disimpan otomatis di:
+
+# App.user_data_dir
+
+#
+
+# Jangan menyimpan database aktif di:
+
+# /sdcard
+
+#
+
+# sehingga aplikasi tidak membutuhkan:
+
+# READ_EXTERNAL_STORAGE
+
+# WRITE_EXTERNAL_STORAGE
+
+# ------------------------------------------------------------
+
+# LOGGING
+
+# ------------------------------------------------------------
+
+log_level = 2
+
+warn_on_root = 1
 
 [buildozer]
 
-# (int) Log level (0 = error only, 1 = info, 2 = debug (with command output))
 log_level = 2
 
-# (int) Display warning if buildozer is run as root (0 = disable, 1 = enable)
 warn_on_root = 1
