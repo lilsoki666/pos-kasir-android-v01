@@ -1,0 +1,27 @@
+name: Build UniversalPOS
+
+on:
+workflow_dispatch:
+
+jobs:
+test:
+name: Test GitHub Actions
+runs-on: ubuntu-22.04
+
+```
+steps:
+  - name: Checkout repository
+    uses: actions/checkout@v4
+
+  - name: Check repository
+    run: |
+      echo "======================================"
+      echo "GITHUB ACTIONS BERHASIL DIJALANKAN"
+      echo "======================================"
+
+      echo "Python:"
+      python3 --version
+
+      echo "Repository:"
+      ls -la
+```
