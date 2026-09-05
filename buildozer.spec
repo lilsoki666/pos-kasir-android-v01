@@ -1,52 +1,54 @@
 [app]
 
-title = UniversalPOS
+# (str) Title of your application
+title = UT Kasirrr
 
-package.name = universalpos
+# (str) Package name
+package.name = utkasir
 
-package.domain = org.universalpos
+# (str) Package domain (needed for android/ios packaging)
+package.domain = org.test
 
-version = 1.0.0
-
+# (str) Source code where the main.py live
 source.dir = .
 
-source.include_exts = py,png,jpg,jpeg,kv,atlas,json,txt,svg,ttf,db
+# (list) Source files to include (include db for sample data if needed)
+source.include_exts = py,png,jpg,kv,atlas,db
 
-source.exclude_dirs = .git,.github,.buildozer,bin,__pycache__,venv,.venv,tests
+# (list) Application requirements
+# PENTING: Hapus versi spesifik dan pyjnius dari requirements.
+# Biarkan p4a memuat versi pyjnius/sdl2 yang sesuai secara otomatis.
+requirements = python3,kivy
 
-requirements = python3,kivy,pyjnius
-
+# (str) Supported orientation (landscape, portrait or all)
 orientation = portrait
 
+# (bool) Indicate if the application should be fullscreen or not
 fullscreen = 0
 
-icon.filename = %(source.dir)s/assets/icon.png
+# (list) Permissions
+android.permissions = INTERNET, READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE
 
-android.permissions = INTERNET,BLUETOOTH,BLUETOOTH_ADMIN,BLUETOOTH_SCAN,BLUETOOTH_CONNECT,READ_MEDIA_IMAGES
+# (int) Target Android API
+android.api = 33
 
-android.api = 35
+# (int) Minimum API required
+android.minapi = 21
 
-android.minapi = 24
+# (str) Android NDK version
+android.ndk = 25b
 
-android.ndk_version = 27c
+# (list) The Android archs to build for
+# PENTING: Wajib tambahkan ini agar kompatibel dengan HP Android modern (64-bit)
+android.archs = arm64-v8a, armeabi-v7a
 
-android.archs = arm64-v8a
-
-android.enable_androidx = True
-
-android.enable_jetifier = True
-
-android.accept_sdk_license = True
-
-android.allow_backup = True
-
-android.add_src = android_src
-
-p4a.branch = develop
-
+# (bool) Enable AndroidX support
+android.androidx = True
 
 [buildozer]
 
+# (int) Log level (0 = error only, 1 = info, 2 = debug (with command output))
 log_level = 2
 
+# (int) Display warning if buildozer is run as root (0 = disable, 1 = enable)
 warn_on_root = 1
